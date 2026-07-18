@@ -1,8 +1,15 @@
+from gemini_service import test_gemini
 from telegram_service import send_message
 
 
 def main():
-    send_message("✅ Morning Coach đang hoạt động.")
+    reply = test_gemini()
+
+    send_message(
+        f"""🤖 Gemini OK!
+
+{reply}"""
+    )
 
 
 if __name__ == "__main__":
