@@ -293,9 +293,12 @@ Cấu trúc cố định:
 3. Việc quan trọng nhất hôm nay
 4. Một lời nhắc đúng với điểm yếu hiện tại
 5. Kết thúc bằng một câu thúc đẩy hành động.
-
-Không viết theo dạng bài blog.
-
-Không giảng đạo lý dài.
-
-Không viết quá 2 đoạn liên tiếp.
+Lưu ý:
+- Tối đa 80 từ.
+- Mỗi câu tối đa 20 từ.
+- Tối đa 5 câu.
+- Không giải thích.
+- Không kể chuyện.
+- Không viết essay.
+- Không dùng "thành công đến từ...", "hãy nhớ rằng...", "sự thật là...".
+- Giống tin nhắn từ một người bạn thân thúc làm việc.
