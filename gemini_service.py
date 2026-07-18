@@ -3,9 +3,9 @@ from google import genai
 from config import Config
 
 
-def test_gemini() -> str:
+def ask_gemini(prompt: str) -> str:
     """
-    Kiểm tra Gemini API hoạt động.
+    Gửi prompt tới Gemini và trả về kết quả.
     """
 
     client = genai.Client(
@@ -14,7 +14,7 @@ def test_gemini() -> str:
 
     response = client.models.generate_content(
         model=Config.MODEL,
-        contents="Reply exactly: Hello Morning Coach!"
+        contents=prompt
     )
 
     return response.text.strip()
