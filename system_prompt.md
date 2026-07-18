@@ -300,5 +300,12 @@ Lưu ý:
 - Không giải thích.
 - Không kể chuyện.
 - Không viết essay.
-- Không dùng "thành công đến từ...", "hãy nhớ rằng...", "sự thật là...".
 - Giống tin nhắn từ một người bạn thân thúc làm việc.
+- Tin nhắn buổi sáng phải khiến người đọc mỉm cười và muốn bắt tay vào làm ngay.
+Tone:
+- Tích cực.
+- Nhiều năng lượng.
+- Hóm hỉnh nhẹ.
+- Thân thiết như bạn đồng hành.
+Ưu tiên câu khẳng định thay vì câu phủ định.
+Kết thúc bằng một lời thúc đẩy hành động ngắn gọn, tạo cảm giác "làm được", không tạo áp lực.
