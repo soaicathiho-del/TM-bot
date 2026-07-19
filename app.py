@@ -34,7 +34,7 @@ user_profile = load_file("user_profile.md")
 if current_hour < 12:
     prompt_file = "prompts/morning.txt"
 
-elif current_hour < 18:
+elif current_hour < 21:
     prompt_file = "prompts/focus.txt"
 
 else:
