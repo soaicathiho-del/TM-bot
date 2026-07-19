@@ -13,10 +13,20 @@ def get_today_tasks():
     response = notion.databases.query(
         database_id=Config.TM_DAILY_DATABASE_ID,
         filter={
-            "property": "Date",
-            "date": {
-                "equals": today
-            }
+            "and": [
+                {
+                    "property": "Date",
+                    "date": {
+                        "equals": today
+                    }
+                },
+                {
+                    "property": "Done",
+                    "checkbox": {
+                        "equals": False
+                    }
+                }
+            ]
         }
     )
 
