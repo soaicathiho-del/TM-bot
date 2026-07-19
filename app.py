@@ -1,38 +1,39 @@
-from config import Config
-from gemini_service import ask_gemini
-from telegram_service import send_message
+name: TM Daily
 
+on:
+  workflow_dispatch:
 
-def load_file(file_name):
-    try:
-        with open(file_name, "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        return ""
+  schedule:
+    # Sáng
+    - cron: "40 7 * * *"
 
+    # Chiều
+    - cron: "00 19 * * *"
 
-system_prompt = load_file("system_prompt.md")
-user_profile = load_file("user_profile.md")
-daily_prompt = load_file("prompt.txt")
+    # Tối
+    - cron: "00 3 * * *"
 
-prompt = f"""
-{system_prompt}
+jobs:
+  send-message:
+    runs-on: ubuntu-latest
 
-=========================
-USER PROFILE
-=========================
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-{user_profile}
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-=========================
-TODAY TASK
-=========================
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-{daily_prompt}
-"""
-
-response = ask_gemini(prompt)
-
-send_message(response)
-
-print("Done.")
+      - name: Run application
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python app.py
