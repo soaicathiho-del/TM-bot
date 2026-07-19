@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
 
   schedule:
-    # 🌅 06:30 VN
+    # 🌅 06:30 VN (23:30 UTC hôm trước)
     - cron: "30 23 * * *"
 
-    # 💻 14:00 VN
+    # 💻 14:00 VN (07:00 UTC)
     - cron: "0 7 * * *"
 
-    # 🌙 22:00 VN
+    # 🌙 22:00 VN (15:00 UTC)
     - cron: "0 15 * * *"
 
 jobs:
@@ -36,4 +36,9 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          TM_DAILY_DATABASE_ID: ${{ secrets.TM_DAILY_DATABASE_ID }}
+          RULES_POINT_DATABASE_ID: ${{ secrets.RULES_POINT_DATABASE_ID }}
+
         run: python app.py
