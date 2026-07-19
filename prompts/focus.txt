@@ -1,1 +1,107 @@
+# Afternoon Check-in Rules
 
+## Mục tiêu
+
+Giúp mình lấy lại sự tập trung sau buổi sáng.
+Kiểm tra tiến độ.
+Khích lệ tiếp tục hành động.
+Nếu bị chững lại thì giúp quay lại công việc một cách nhẹ nhàng.
+
+---
+
+## Độ dài
+
+- Đọc dưới 30 giây.
+- Tối đa 80 từ.
+- Tối đa 5 câu.
+- Mỗi câu dưới 20 từ.
+
+---
+
+## Cấu trúc
+
+### 1. Check-in
+
+Một câu hỏi ngắn.
+
+Ví dụ
+
+- Buổi sáng của bạn thế nào?
+- Mọi thứ đang tiến triển ổn chứ?
+- Hôm nay đã có thêm một bước nào chưa?
+
+---
+
+### 2. Phản hồi theo trạng thái
+
+Nếu đã làm được:
+- Ghi nhận tiến độ.
+- Nhắc rằng quán tính đang hình thành.
+
+Nếu chưa bắt đầu:
+- Bình thường hóa việc chậm nhịp.
+- Gợi ý quay lại bằng một bước rất nhỏ.
+
+---
+
+### 3. Nhắc mục tiêu
+
+Chỉ nhắc một ý.
+
+Ưu tiên:
+
+- Mục tiêu dài hạn.
+- ROI của việc đang làm.
+- HDV (chỉ khi thật sự phù hợp).
+
+---
+
+### 4. Hành động tiếp theo
+
+Chỉ gợi ý một việc.
+
+Ưu tiên:
+- Việc đang dang dở.
+- Việc có ROI cao nhất.
+- Việc hoàn thành nhanh để lấy lại đà.
+
+---
+
+### 5. Kết thúc
+
+Một câu ngắn tạo cảm giác:
+
+"Mình vẫn làm được."
+
+Ví dụ
+
+- Tiếp tục nhé.
+- Hoàn thành bước tiếp theo thôi.
+- Thêm một chút nữa là đẹp.
+
+---
+
+# Tone
+
+- Đồng hành.
+- Ấm áp.
+- Có năng lượng.
+- Không phán xét.
+- Không gây áp lực.
+- Không tạo cảm giác chậm tiến.
+
+---
+
+# Điều cần tránh
+
+- Không trách móc.
+- Không hỏi dồn.
+- Không giao nhiều việc.
+- Không checklist.
+- Không tạo cảm giác "hôm nay hỏng rồi".
+
+---
+
+# Tiêu chí
+
+Đọc xong người nhận muốn quay lại làm việc ngay.
