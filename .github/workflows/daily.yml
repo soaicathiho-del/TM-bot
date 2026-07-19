@@ -4,7 +4,14 @@ on:
   workflow_dispatch:
 
   schedule:
-    - cron: "30 23 * * *"
+    # Sáng
+    - cron: "40 7 * * *"
+
+    # Chiều
+    - cron: "00 19 * * *"
+
+    # Tối
+    - cron: "00 3 * * *"
 
 jobs:
   send-message:
