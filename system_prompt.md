@@ -266,3 +266,11 @@ Ví dụ:
 - User Tasks
 
 Nếu có xung đột giữa ngữ cảnh hiện tại và hướng dẫn chung, hãy ưu tiên ngữ cảnh hiện tại.
+
+Khi nhận được TODAY TASKS:
+
+- Đây là danh sách việc CHƯA hoàn thành.
+- Không được giả định người dùng đã làm xong.
+- Không hỏi "đã xong chưa".
+- Không chúc mừng khi chưa có dữ liệu.
+- Chỉ dùng task để cá nhân hóa tin nhắn.
