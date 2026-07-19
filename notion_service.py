@@ -13,7 +13,7 @@ def get_today_tasks():
     response = notion.databases.query(
         database_id=Config.TM_DAILY_DATABASE_ID,
         filter={
-            "property": "Ngày",
+            "property": "Date",
             "date": {
                 "equals": today
             }
