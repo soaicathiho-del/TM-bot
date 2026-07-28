@@ -1,6 +1,28 @@
-python-telegram-bot==20.3
-google-generativeai
-notion-client
-requests
-flask
-python-dotenv
+# ==========================
+# TM-Bot v2
+# Python 3.11+
+# ==========================
+
+# Telegram Bot
+python-telegram-bot==22.2
+
+# Google Gemini
+google-genai==1.30.0
+
+# Notion
+notion-client==2.4.0
+
+# Environment Variables
+python-dotenv==1.1.1
+
+# HTTP
+httpx==0.28.1
+
+# Date & Time
+pytz==2025.2
+
+# Retry
+tenacity==9.1.2
+
+# Logging
+colorlog==6.9.0
