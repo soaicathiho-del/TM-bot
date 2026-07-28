@@ -1,0 +1,6 @@
+python-telegram-bot==20.3
+google-generativeai
+notion-client
+requests
+flask
+python-dotenv
