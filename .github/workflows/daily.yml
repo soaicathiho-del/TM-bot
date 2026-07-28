@@ -2,14 +2,21 @@ name: TM Bot
 
 on:
   schedule:
-    - cron: '37 15 * * *' # 22:37 GMT+7
+    # 09:00 GMT+7
+    - cron: '0 2 * * *'
+
+    # 15:00 GMT+7
+    - cron: '0 8 * * *'
+
+    # 22:30 GMT+7
+    - cron: '30 15 * * *'
 
 jobs:
   consolidate:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Run consolidation
         env:
@@ -18,5 +25,4 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           TM_DAILY_DATABASE_ID: ${{ secrets.TM_DAILY_DATABASE_ID }}
         run: |
-          echo "Running TM Bot..."
-          # Add script execution here
+          python daily_consolidation.py
