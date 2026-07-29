@@ -135,28 +135,25 @@ async def main():
     hour = now.hour
     minute = now.minute
 
+    # ==========================================================
+    # Xác định loại tin nhắn theo khoảng giờ
+    # ==========================================================
 
-# ==========================================================
-# Xác định loại tin nhắn theo khoảng giờ
-# ==========================================================
+    if 6 <= hour < 12:
+        task_type = "morning"
 
-if 6 <= hour < 12:
-    task_type = "morning"
+    elif 12 <= hour < 18:
+        task_type = "focus"
 
-elif 12 <= hour < 18:
-    task_type = "focus"
+    elif 18 <= hour < 24:
+        task_type = "evening"
 
-elif 18 <= hour < 24:
-    task_type = "evening"
+    else:
+        logger.info(
+            f"Outside automation window ({hour:02d}:{minute:02d})"
+        )
+        return
 
-else:
-    logger.info(
-        f"Outside automation window ({hour:02d}:{minute:02d})"
-    )
-    return
-
-
-    
     logger.info(
         f"Running {task_type} automation "
         f"({hour:02d}:{minute:02d})"
