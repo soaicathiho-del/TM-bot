@@ -350,13 +350,7 @@ def main():
     app.add_handler(CommandHandler("done", handle_done))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
     
-    jq = app.job_queue
-    cid = getattr(Config, "CHAT_ID", None)
-    if cid:
-        jq.run_daily(lambda c: run_scheduled_job(c, "morning"), time=Config.MORNING_TIME, chat_id=cid)
-        jq.run_daily(lambda c: run_scheduled_job(c, "focus"), time=Config.FOCUS_TIME, chat_id=cid)
-        jq.run_daily(lambda c: run_scheduled_job(c, "sleep"), time=Config.EVENING_TIME, chat_id=cid)
-    
+
     logger.info("TM-Bot Started with Human-like personality.")
     app.run_polling(drop_pending_updates=True)
 
