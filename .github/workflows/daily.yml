@@ -4,9 +4,14 @@ on:
   workflow_dispatch:
 
   schedule:
-    - cron: '0 2 * * *'
-    - cron: '0 8 * * *'
-    - cron: '30 15 * * *'
+    # 09:07 GMT+7
+    - cron: '7 2 * * *'
+
+    # 15:14 GMT+7
+    - cron: '14 8 * * *'
+
+    # 22:37 GMT+7
+    - cron: '37 15 * * *'
 
 jobs:
   consolidate:
