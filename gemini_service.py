@@ -49,10 +49,6 @@ async def ask_gemini(prompt: str) -> str:
             prompt,
         )
 
-    except Exception as e:
-
-        logger.exception(e)
-
-        return (
-            "TM: Xin lỗi, tôi đang gặp lỗi khi kết nối Gemini."
-        )
+except Exception as e:
+    logger.exception(e)
+    raise
