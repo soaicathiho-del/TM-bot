@@ -344,15 +344,36 @@ async def run_scheduled_job(context: ContextTypes.DEFAULT_TYPE, task_type: str):
 # ==========================================================
 def main():
     Config.validate()
-    app = Application.builder().token(Config.BOT_TOKEN).build()
-    
-    app.add_handler(CommandHandler("start", handle_start))
-    app.add_handler(CommandHandler("done", handle_done))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
-    
 
-    logger.info("TM-Bot Started with Human-like personality.")
-    app.run_polling(drop_pending_updates=True)
+    app = (
+        Application.builder()
+        .token(Config.BOT_TOKEN)
+        .build()
+    )
+
+    app.add_handler(
+        CommandHandler("start", handle_start)
+    )
+
+    app.add_handler(
+        CommandHandler("done", handle_done)
+    )
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            message_router,
+        )
+    )
+
+    logger.info("==============================")
+    logger.info("TM-Bot Started")
+    logger.info("==============================")
+
+    app.run_polling(
+        drop_pending_updates=False,
+    )
+
 
 if __name__ == "__main__":
     main()
