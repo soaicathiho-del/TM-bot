@@ -1,6 +1,8 @@
 name: TM Bot
 
 on:
+  workflow_dispatch:
+
   schedule:
     # 09:00 GMT+7
     - cron: '0 2 * * *'
