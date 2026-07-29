@@ -135,25 +135,28 @@ async def main():
     hour = now.hour
     minute = now.minute
 
-    # ==========================================================
-    # Xác định loại tin nhắn theo giờ chạy
-    # ==========================================================
 
-    if hour == 9:
-        task_type = "morning"
+# ==========================================================
+# Xác định loại tin nhắn theo khoảng giờ
+# ==========================================================
 
-    elif hour == 15:
-        task_type = "focus"
+if 6 <= hour < 12:
+    task_type = "morning"
 
-    elif hour == 22:
-        task_type = "evening"
+elif 12 <= hour < 18:
+    task_type = "focus"
 
-    else:
-        logger.info(
-            f"Skip automation at {hour:02d}:{minute:02d}"
-        )
-        return
+elif 18 <= hour < 24:
+    task_type = "evening"
 
+else:
+    logger.info(
+        f"Outside automation window ({hour:02d}:{minute:02d})"
+    )
+    return
+
+
+    
     logger.info(
         f"Running {task_type} automation "
         f"({hour:02d}:{minute:02d})"
@@ -204,5 +207,3 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 
-if __name__ == "__main__":
-    asyncio.run(main())
