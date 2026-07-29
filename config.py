@@ -30,7 +30,7 @@ class Config:
 
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
-    # ⚠️ GIỮ NGUYÊN MODEL CỦA DỰ ÁN
+    # ⚠️ GIỮ NGUYÊN MODEL
     GEMINI_MODEL = "gemini-1.5-flash"
 
     # ==========================================================
@@ -62,17 +62,53 @@ class Config:
 
     HISTORY_LIMIT = 300
 
-    MEMORY_FILE = "data/memories.json"
+    # ==========================================================
+    # DATA
+    # ==========================================================
+
+    DATA_FOLDER = "data"
 
     HISTORY_FILE = "data/history.json"
 
+    MEMORY_FILE = "data/memories.json"
+
     USER_PROFILE_FILE = "data/user-profile.md"
+
+    # ==========================================================
+    # PROMPTS
+    # ==========================================================
 
     PROMPT_FOLDER = "prompts"
 
-    LOG_FOLDER = "logs"
+    SYSTEM_PROMPT = "prompts/system/tm-core.md"
+
+    ADAPTIVE_RULES = "prompts/system/tm-adaptive-rules.md"
+
+    MORNING_PROMPT = "prompts/tasks/morning.md"
+
+    FOCUS_PROMPT = "prompts/tasks/focus.md"
+
+    SLEEP_PROMPT = "prompts/tasks/sleep.md"
+
+    # ==========================================================
+    # AUTOMATION
+    # ==========================================================
+
+    MORNING_HOUR = 7
+
+    AFTERNOON_HOUR = 13
+
+    EVENING_HOUR = 21
 
     FOCUS_CHECK_INTERVAL_MINUTES = 25
+
+    REMINDER_INTERVAL_MINUTES = 60
+
+    # ==========================================================
+    # LOG
+    # ==========================================================
+
+    LOG_FOLDER = "logs"
 
     # ==========================================================
     # VALIDATION
