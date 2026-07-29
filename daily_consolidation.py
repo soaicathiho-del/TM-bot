@@ -123,41 +123,86 @@ Người dùng sẽ đọc bản này để duyệt lưu vào bộ nhớ dài h�
 # ==========================================================
 async def main():
     Config.validate()
+
     tg = TelegramService()
-    chat_id = getattr(Config, "CHAT_ID", None)
-    
+    chat_id = Config.CHAT_ID
+
     if not chat_id:
-        logger.error("CHAT_ID not found in Config.")
+        logger.error("CHAT_ID not found.")
         return
 
     now = datetime.now(VN)
     hour = now.hour
-    
-    # Determine task type based on hour
-    # Morning: 6-9h, Focus: 10-17h, Evening: 18-23h
-    task_type = "chat"
-    if 5 <= hour <= 9: task_type = "morning"
-    elif 10 <= hour <= 17: task_type = "focus"
-    else: task_type = "evening"
+    minute = now.minute
 
-    logger.info(f"Running consolidation for type: {task_type} at hour: {hour}")
+    # ==========================================================
+    # Xác định loại tin nhắn theo giờ chạy
+    # ==========================================================
 
-    # 1. Send Periodic Message
+    if hour == 9:
+        task_type = "morning"
+
+    elif hour == 15:
+        task_type = "focus"
+
+    elif hour == 22:
+        task_type = "evening"
+
+    else:
+        logger.info(
+            f"Skip automation at {hour:02d}:{minute:02d}"
+        )
+        return
+
+    logger.info(
+        f"Running {task_type} automation "
+        f"({hour:02d}:{minute:02d})"
+    )
+
+    # ==========================================================
+    # Tạo prompt
+    # ==========================================================
+
     prompt = await build_consolidation_prompt(task_type)
+
     response = await ask_gemini(prompt)
-    
+
     if response:
+
         tg.send_message(chat_id, response)
-        save_message_to_history("bot", response)
+
+        save_message_to_history(
+            "bot",
+            response,
+        )
+
         logger.info(f"Sent {task_type} message.")
 
-    # 2. If Evening, also send Daily Summary
-    if task_type == "evening" and hour >= 20:
-        summary_msg = await generate_daily_summary()
-        if summary_msg:
-            tg.send_message(chat_id, summary_msg)
-            save_message_to_history("bot", summary_msg)
+    # ==========================================================
+    # Gửi báo cáo cuối ngày
+    # ==========================================================
+
+    if task_type == "evening":
+
+        summary = await generate_daily_summary()
+
+        if summary:
+
+            tg.send_message(
+                chat_id,
+                summary,
+            )
+
+            save_message_to_history(
+                "bot",
+                summary,
+            )
+
             logger.info("Sent daily summary.")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 
 if __name__ == "__main__":
     asyncio.run(main())
