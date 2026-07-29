@@ -49,6 +49,8 @@ async def ask_gemini(prompt: str) -> str:
             prompt,
         )
 
-except Exception as e:
-    logger.exception(e)
-    raise
+    except Exception as e:
+
+        logger.exception("Gemini error")
+
+        raise
