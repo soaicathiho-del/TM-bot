@@ -4,7 +4,7 @@
 # ==========================
 
 # Telegram Bot
-python-telegram-bot==22.2
+python-telegram-bot[job-queue]==22.2
 
 # Google Gemini
 google-genai==1.30.0
