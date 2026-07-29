@@ -295,7 +295,14 @@ async def handle_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, intera
     save_message("bot", resp)
 
 async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text: return
+
+    logger.info("==============================")
+    logger.info("MESSAGE RECEIVED")
+    logger.info(update.message.text if update.message else "NO MESSAGE")
+    logger.info("==============================")
+
+    if not update.message or not update.message.text:
+        return
     
     user_text = update.message.text
     intent = await detect_intent(user_text)
