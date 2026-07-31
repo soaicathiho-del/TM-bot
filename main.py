@@ -396,4 +396,205 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE, task_n
     if not task_name:
         prompt = build_prompt("chat", "Tôi vừa xong việc nhưng quên nói tên task.")
         resp = await generate_ai_response(prompt) or "Tuyệt! Mà bạn vừa hoàn thành task nào thế để mình ghi nhận?"
-        await
+        await update.message.reply_text(resp)
+        return
+
+    info = await process_done(task_name)
+    save_message("user", f"Hoàn thành task: {task_name}")
+    # Xong task -> chắc chắn không còn "đang làm" nữa
+    update_state(working=False, working_since=None)
+    prompt = build_prompt("done", f"Tôi đã xong task {task_name}", extra_instruction=info)
+    resp = await generate_ai_response(prompt) or f"Ghi nhận nhé! Bạn làm tốt lắm khi xong {task_name}."
+    await update.message.reply_text(resp)
+    save_message("bot", resp)
+
+
+async def handle_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    history = get_daily_history()
+    summary = ""
+    for item in reversed(history):
+        if item.get("role") == "bot" and "[TÓM TẮT HÔM NAY]" in item.get("content", ""):
+            content = item["content"]
+            try:
+                summary = content.split("[TÓM TẮT HÔM NAY]")[1].split("Sau khi hiển thị")[0].strip()
+            except: summary = content
+            break
+
+    save_message("user", "Duyệt bản tóm tắt.")
+    if summary and approve_memory(summary):
+        prompt = build_prompt("chat", "Tôi đã duyệt bản tóm tắt ngày hôm nay.", extra_instruction="Hệ thống đã lưu xong memory.")
+        resp = await generate_ai_response(prompt) or "Đã nhớ! Mình đã lưu lại những điều quan trọng của hôm nay rồi nhé."
+    else:
+        prompt = build_prompt("chat", "Tôi muốn duyệt nhưng không thấy tóm tắt.", extra_instruction="Lỗi: Không tìm thấy tóm tắt.")
+        resp = await generate_ai_response(prompt) or "Ơ, mình chưa thấy bản tóm tắt nào để duyệt cả. Để mình kiểm tra lại nhé."
+
+    await update.message.reply_text(resp)
+    save_message("bot", resp)
+
+
+async def handle_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, interaction_type: str = "chat", extra: str = ""):
+    user_text = update.message.text
+    save_message("user", user_text)
+
+    hour = datetime.now(VN).hour
+    energy_status = "Giờ vàng, ưu tiên Deep Work." if (8 <= hour <= 11 or 14 <= hour <= 17) else "Năng lượng có thể thấp, ưu tiên task nhẹ hoặc nghỉ ngơi."
+    instruction = f"[ENERGY ADVICE]: {energy_status}"
+
+    if load_state().get("working"):
+        instruction += "\n[WORKING MODE]: Người dùng đang làm việc. Không nhắc task, không coaching, chỉ trò chuyện ngắn nếu cần."
+
+    if extra: instruction += f"\n{extra}"
+
+    prompt = build_prompt(interaction_type, user_text, extra_instruction=instruction)
+    resp = await generate_ai_response(prompt) or "Mình đang nghe đây, bạn cứ nói tiếp đi."
+    await update.message.reply_text(resp)
+    save_message("bot", resp)
+
+
+async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("==============================")
+    logger.info("MESSAGE RECEIVED")
+    logger.info(update.message.text if update.message else "NO MESSAGE")
+    logger.info("==============================")
+
+    if not update.message or not update.message.text:
+        return
+
+    user_text = update.message.text
+    intent = await detect_intent(user_text)
+
+    try:
+        if intent == "approve":
+            update_state(smalltalk_count=0)
+            await handle_approve(update, context)
+
+        elif intent == "done":
+            task = user_text.lower().replace("done", "").replace("xong rồi", "").replace("hoàn thành", "").strip()
+            update_state(smalltalk_count=0)
+            await handle_done(update, context, task)
+
+        elif intent == "energy":
+            await handle_chat(update, context, "chat", extra="Người dùng đang cảm thấy mệt mỏi/nản. Hãy phản hồi như một người bạn đồng hành, thấu hiểu và đưa ra lời khuyên phù hợp. Đồng cảm trước, gợi ý sau, KHÔNG dồn dập coaching.")
+
+        elif intent == "working":
+            update_state(
+                working=True,
+                working_since=datetime.now(VN).isoformat(),
+                last_topic=user_text[:80],
+                smalltalk_count=0,
+            )
+            await handle_chat(update, context, "chat", extra="Người dùng vừa xác nhận đang làm việc/tập trung.")
+
+        elif intent == "smalltalk":
+            state = load_state()
+            update_state(smalltalk_count=state.get("smalltalk_count", 0) + 1)
+            await handle_chat(update, context, "chat", extra="Người dùng đang chỉ trò chuyện phiếm/đùa vui. Phản hồi kiểu bạn bè, KHÔNG biến thành coaching.")
+
+        elif intent in ["morning", "sleep"]:
+            update_state(smalltalk_count=0)
+            await handle_chat(update, context, intent)
+
+        else:
+            await handle_chat(update, context, "chat")
+
+    except Exception as e:
+        logger.exception(e)
+        prompt = build_prompt("chat", user_text, extra_instruction="Hệ thống gặp lỗi kỹ thuật nhẹ.")
+        resp = await generate_ai_response(prompt) or "Hình như mình gặp chút trục trặc, bạn nói lại được không?"
+        await update.message.reply_text(resp)
+
+
+# ==========================================================
+# PHẦN 10: SCHEDULER (MỚI — thật sự được đăng ký, có dedup)
+# ==========================================================
+async def run_scheduled_job(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    if not job or not job.chat_id:
+        return
+
+    task_type = job.data
+    today = datetime.now(VN).strftime("%Y-%m-%d")
+
+    if already_sent_today(task_type):
+        logger.info(f"[Scheduler] Bỏ qua {task_type}, đã gửi hôm nay rồi.")
+        return
+
+    prompt = build_prompt(task_type, f"Đến giờ {task_type} rồi.")
+    resp = await generate_ai_response(prompt) or f"Đến giờ {task_type} rồi, chúng ta bắt đầu chứ?"
+    await context.bot.send_message(chat_id=job.chat_id, text=resp)
+    save_message("bot", resp)
+    mark_sent(task_type, today)
+
+    if task_type == "sleep":
+        history = get_daily_history()
+        sum_prompt = f"Hãy tóm tắt ngày hôm nay một cách tự nhiên, chân thực (dưới 200 từ) dựa trên lịch sử này:\n{json.dumps(history, ensure_ascii=False)}"
+        summary = await generate_ai_response(sum_prompt)
+        if summary:
+            msg = f"[TÓM TẮT HÔM NAY]\n{summary}\n\nBạn thấy bản tóm tắt này thế nào? Nhắn \"Duyệt\" để mình lưu vào bộ nhớ nhé!"
+            await context.bot.send_message(chat_id=job.chat_id, text=msg)
+            save_message("bot", msg)
+
+
+async def working_timeout_check(context: ContextTypes.DEFAULT_TYPE):
+    """MỚI: tự reset working nếu quá lâu người dùng quên báo 'xong rồi'."""
+    state = load_state()
+    if not state.get("working") or not state.get("working_since"):
+        return
+    try:
+        since = datetime.fromisoformat(state["working_since"])
+    except Exception:
+        update_state(working=False, working_since=None)
+        return
+    if datetime.now(VN) - since > timedelta(minutes=Config.WORKING_TIMEOUT_MINUTES):
+        logger.info("[Scheduler] Auto-reset working state (timeout).")
+        update_state(working=False, working_since=None)
+
+
+def schedule_jobs(app: Application):
+    jq: JobQueue = app.job_queue
+    chat_id = int(Config.CHAT_ID)
+
+    jq.run_daily(run_scheduled_job, time=time(Config.MORNING_HOUR, 0, tzinfo=VN),
+                 chat_id=chat_id, name="job_morning", data="morning")
+    jq.run_daily(run_scheduled_job, time=time(Config.AFTERNOON_HOUR, 0, tzinfo=VN),
+                 chat_id=chat_id, name="job_focus", data="focus")
+    jq.run_daily(run_scheduled_job, time=time(Config.EVENING_HOUR, 0, tzinfo=VN),
+                 chat_id=chat_id, name="job_sleep", data="sleep")
+
+    jq.run_repeating(working_timeout_check,
+                      interval=Config.WORKING_TIMEOUT_CHECK_SECONDS,
+                      first=60, name="job_working_timeout")
+
+    logger.info("[Scheduler] Đã đăng ký job: morning/focus/sleep + working_timeout_check")
+
+
+# ==========================================================
+# PHẦN 11: MAIN
+# ==========================================================
+def main():
+    Config.validate()
+    app = (
+        Application.builder()
+        .token(Config.BOT_TOKEN)
+        .build()
+    )
+
+    app.add_handler(CommandHandler("start", handle_start))
+    app.add_handler(CommandHandler("done", handle_done))
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            message_router,
+        )
+    )
+
+    schedule_jobs(app)
+
+    logger.info("==============================")
+    logger.info("TM-Bot Started")
+    logger.info("==============================")
+    app.run_polling(drop_pending_updates=False)
+
+
+if __name__ == "__main__":
+    main()
