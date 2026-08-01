@@ -23,7 +23,7 @@ from notion_service import (
 )
 
 # ==========================================================
-# PHẦN 1: KHỞI TẠO (Imports, Logger, Timezone)
+# PHẦN 1: KHỞI TẠO
 # ==========================================================
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -36,13 +36,16 @@ VN = timezone(timedelta(hours=7))
 DEFAULT_STATE = {
     "working": False,
     "working_since": None,
-    "last_topic": "",
+    "focus_session": None,      # {"minutes": 25, "start": iso, "checkins": 0}
+    "last_task_reminder_at": None,
+    "push_count": 0,
     "smalltalk_count": 0,
-    "last_sent": {},   # {"morning": "2026-07-31", "focus": "...", "sleep": "..."}
+    "last_sent": {},
 }
 
+
 # ==========================================================
-# PHẦN 2: TIỆN ÍCH (Utilities)
+# PHẦN 2: TIỆN ÍCH
 # ==========================================================
 def load_file(file_name: str) -> str:
     try:
@@ -63,7 +66,7 @@ def load_json(file_name: str) -> list:
             data = json.load(f)
         return data if isinstance(data, list) else []
     except json.JSONDecodeError:
-        logger.warning(f"Error decoding JSON from {file_name}. Returning empty list.")
+        logger.warning(f"Error decoding JSON from {file_name}.")
         return []
     except Exception as e:
         logger.exception(e)
@@ -79,19 +82,21 @@ def save_json(file_name: str, data: list):
         logger.exception(e)
 
 
+def is_golden_hour(hour: int) -> bool:
+    return any(start <= hour <= end for start, end in Config.WORKING_HOUR_RANGES)
+
+
 # ==========================================================
-# PHẦN 3: LỊCH SỬ (History)
+# PHẦN 3: LỊCH SỬ
 # ==========================================================
 def get_daily_history() -> list:
-    path = Config.HISTORY_FILE
-    history = load_json(path)
+    history = load_json(Config.HISTORY_FILE)
     today = datetime.now(VN).strftime("%Y-%m-%d")
     return [item for item in history if item.get("date") == today]
 
 
 def save_message(role: str, content: str):
-    path = Config.HISTORY_FILE
-    history = load_json(path)
+    history = load_json(Config.HISTORY_FILE)
     message = {
         "date": datetime.now(VN).strftime("%Y-%m-%d"),
         "timestamp": datetime.now(VN).isoformat(),
@@ -99,11 +104,11 @@ def save_message(role: str, content: str):
         "content": content,
     }
     history.append(message)
-    save_json(path, history[-Config.HISTORY_LIMIT:])
+    save_json(Config.HISTORY_FILE, history[-Config.HISTORY_LIMIT:])
 
 
 # ==========================================================
-# PHẦN 3.5: SESSION STATE (MỚI — dùng chung cho toàn bộ logic)
+# PHẦN 3.5: SESSION STATE (dùng chung toàn bộ logic)
 # ==========================================================
 def load_state() -> dict:
     path = Config.STATE_FILE
@@ -145,25 +150,40 @@ def mark_sent(task_type: str, date_str: str):
 
 def already_sent_today(task_type: str) -> bool:
     today = datetime.now(VN).strftime("%Y-%m-%d")
+    return load_state().get("last_sent", {}).get(task_type) == today
+
+
+def record_push():
+    """Đánh dấu bot vừa Push (nhắc/thúc task) — dùng cho cả push_count lẫn reminder cooldown."""
     state = load_state()
-    return state.get("last_sent", {}).get(task_type) == today
+    update_state(
+        push_count=state.get("push_count", 0) + 1,
+        last_task_reminder_at=datetime.now(VN).isoformat(),
+    )
+
+
+def reset_push():
+    update_state(push_count=0, last_task_reminder_at=None)
+
+
+def reset_work_and_push():
+    """Gọi khi user báo đã hành động (done/working) — reset mọi counter liên quan."""
+    update_state(
+        working=False, working_since=None, focus_session=None,
+        push_count=0, last_task_reminder_at=None, smalltalk_count=0,
+    )
 
 
 # ==========================================================
-# PHẦN 4: BỘ NHỚ (Memory)
+# PHẦN 4: BỘ NHỚ
 # ==========================================================
 def load_memory() -> list:
-    path = Config.MEMORY_FILE
-    return load_json(path)
+    return load_json(Config.MEMORY_FILE)
 
 
 def append_memory(summary: str):
     memories = load_memory()
-    new_memory = {
-        "date": datetime.now(VN).strftime("%Y-%m-%d"),
-        "summary": summary,
-    }
-    memories.append(new_memory)
+    memories.append({"date": datetime.now(VN).strftime("%Y-%m-%d"), "summary": summary})
     save_json(Config.MEMORY_FILE, memories)
 
 
@@ -177,7 +197,7 @@ def approve_memory(summary: str) -> bool:
 
 
 # ==========================================================
-# PHẦN 5: PROMPT ENGINE (Có Cache)
+# PHẦN 5: PROMPT ENGINE
 # ==========================================================
 PROMPT_CACHE = {}
 
@@ -207,17 +227,14 @@ def load_long_term_memory_prompt() -> str:
     memories = load_memory()
     if not memories:
         return "Không có bộ nhớ dài hạn."
-    formatted_memories = "\n".join(
-        [f"- {m['date']}: {m['summary']}" for m in memories]
-    )
-    return f"LONG TERM MEMORY:\n{formatted_memories}"
+    lines = "\n".join([f"- {m['date']}: {m['summary']}" for m in memories])
+    return f"LONG TERM MEMORY:\n{lines}"
 
 
 def load_today_history_prompt() -> str:
     history = get_daily_history()
     if not history:
         return "Không có lịch sử trò chuyện hôm nay."
-
     now = datetime.now(VN)
     lines = []
     for h in history:
@@ -233,8 +250,7 @@ def load_today_history_prompt() -> str:
         except Exception:
             delta_str = "?"
         lines.append(f"- [{delta_str}] {h['role'].upper()}: {h['content']}")
-
-    return "TODAY'S HISTORY (kèm khoảng cách thời gian tới hiện tại):\n" + "\n".join(lines)
+    return "TODAY'S HISTORY (kèm khoảng cách thời gian):\n" + "\n".join(lines)
 
 
 def load_today_tasks_prompt() -> str:
@@ -248,7 +264,7 @@ def load_today_tasks_prompt() -> str:
             except Exception:
                 continue
         if task_lines:
-            return f"TODAY'S TASKS:\n{os.linesep.join(task_lines)}"
+            return "TODAY'S TASKS:\n" + "\n".join(task_lines)
     except Exception:
         pass
     return "Không có task nào chưa hoàn thành."
@@ -258,50 +274,65 @@ def load_task_specific_prompt(interaction_type: str) -> str:
     mapping = {
         "morning": "prompts/tasks/morning.md",
         "focus": "prompts/tasks/focus.md",
-        "sleep": "prompts/tasks/sleep.md"
+        "sleep": "prompts/tasks/sleep.md",
     }
     path = mapping.get(interaction_type)
     return _load_prompt_file(path) if path else ""
 
 
 def load_state_prompt() -> str:
-    """MỚI: cho model biết TRẠNG THÁI hiện tại, không chỉ nội dung chat."""
     state = load_state()
     lines = ["CONVERSATION STATE:"]
 
-    if state.get("working"):
+    if state.get("focus_session"):
+        fs = state["focus_session"]
+        lines.append(f"- Đang trong phiên FOCUS MODE {fs.get('minutes')} phút "
+                      f"(đã check-in {fs.get('checkins', 0)} lần). Giọng nghiêm khắc, câu ngắn.")
+    elif state.get("working"):
         since = state.get("working_since")
         try:
             mins = int((datetime.now(VN) - datetime.fromisoformat(since)).total_seconds() // 60)
         except Exception:
             mins = "?"
-        lines.append(f"- Người dùng ĐANG trong phiên làm việc/tập trung (bắt đầu {mins} phút trước).")
-        lines.append("- KHÔNG được nhắc mở task, KHÔNG coaching lại, KHÔNG hỏi tiến độ dồn dập.")
-        lines.append("- Nếu người dùng chủ động nhắn, chỉ trò chuyện ngắn gọn, tự nhiên, rồi để họ quay lại làm việc.")
+        lines.append(f"- Người dùng ĐANG làm việc tự do (bắt đầu {mins} phút trước). "
+                      "KHÔNG nhắc task, KHÔNG coaching, chỉ trò chuyện ngắn nếu cần.")
     else:
         lines.append("- Người dùng hiện KHÔNG trong phiên làm việc nào được xác nhận.")
 
-    smalltalk_count = state.get("smalltalk_count", 0)
-    if smalltalk_count >= Config.SMALL_TALK_LIMIT:
-        lines.append(f"- Đã trò chuyện phiếm {smalltalk_count} lượt liên tiếp. "
-                      "Có thể nhẹ nhàng gợi ý quay lại việc, KHÔNG ép buộc, KHÔNG lặp lại nhàm chán.")
+    last_reminder = state.get("last_task_reminder_at")
+    if last_reminder:
+        try:
+            mins_since = int((datetime.now(VN) - datetime.fromisoformat(last_reminder)).total_seconds() // 60)
+            if mins_since < Config.REMINDER_GAP_MINUTES:
+                lines.append(f"- Vừa nhắc task {mins_since} phút trước. KHÔNG chủ động nhắc lại "
+                              f"trừ khi người dùng chủ động hỏi (giãn cách {Config.REMINDER_GAP_MINUTES} phút).")
+        except Exception:
+            pass
+
+    push_count = state.get("push_count", 0)
+    if push_count >= Config.PUSH_LIMIT:
+        lines.append(f"- Đã Push {push_count} lần liên tiếp mà chưa thấy hành động. "
+                      "BẮT BUỘC chuyển sang PROBE lần này: hỏi nguyên nhân theo 3 trục "
+                      "(kỹ năng / tâm trạng / thời gian). KHÔNG Push thêm.")
+
+    if state.get("smalltalk_count", 0) >= Config.SMALL_TALK_LIMIT:
+        lines.append("- Đã trò chuyện phiếm nhiều lượt liên tiếp. Có thể nhẹ nhàng gợi ý quay lại việc.")
 
     return "\n".join(lines)
 
 
 def build_role_prompt() -> str:
-    """Role prompt giờ PHỤ THUỘC vào state — đây là chỗ sửa lỗi 'vừa chúc ngủ ngon xong lại nhắc task'."""
     state = load_state()
     if state.get("working"):
         return (
             "ROLE:\nBạn đồng thời là Planner, Coach, Accountability Partner. "
-            "Hãy phản hồi tự nhiên, gần gũi như con người. Tuyệt đối không nói mình là AI. "
-            "NGƯỜI DÙNG ĐANG LÀM VIỆC — bây giờ bạn ở SUPPORT MODE: không thúc giục, "
-            "không nhắc task, không coaching. Chỉ đồng hành nhẹ nhàng nếu họ chủ động nói chuyện."
+            "Phản hồi tự nhiên, gần gũi như con người. Tuyệt đối không nói mình là AI. "
+            "NGƯỜI DÙNG ĐANG LÀM VIỆC — SUPPORT MODE: không thúc giục, không nhắc task, "
+            "không coaching. Chỉ đồng hành nhẹ nếu họ chủ động nói chuyện."
         )
     return (
         "ROLE:\nBạn đồng thời là Planner, Coach, Accountability Partner. "
-        "Hãy phản hồi tự nhiên, gần gũi như con người. Tuyệt đối không nói mình là AI. "
+        "Phản hồi tự nhiên, gần gũi như con người. Tuyệt đối không nói mình là AI. "
         "Ưu tiên hành động và động viên người dùng."
     )
 
@@ -324,14 +355,13 @@ def build_prompt(interaction_type: str, user_message: str, extra_instruction: st
 
 
 # ==========================================================
-# PHẦN 6: AI ENGINE (Atomic)
+# PHẦN 6: AI ENGINE
 # ==========================================================
 async def generate_ai_response(prompt: str, _retry_once: bool = True) -> str:
     try:
         response = await ask_gemini(prompt)
         response = response.strip() if response else ""
         if not response and _retry_once:
-            # Sửa lỗi: fallback cũ chỉ trigger khi rỗng, không phải khi trùng câu cũ.
             logger.warning("Empty response from Gemini, retrying once...")
             return await generate_ai_response(prompt, _retry_once=False)
         return response
@@ -341,7 +371,7 @@ async def generate_ai_response(prompt: str, _retry_once: bool = True) -> str:
 
 
 # ==========================================================
-# PHẦN 7: NHẬN DIỆN Ý ĐỊNH (Intent Detection)
+# PHẦN 7: NHẬN DIỆN Ý ĐỊNH
 # ==========================================================
 WORKING_KEYWORDS = [
     "đang làm", "đang viết", "đang code", "đang tập trung",
@@ -370,7 +400,8 @@ async def detect_intent(user_message: str) -> str:
 async def process_done(task_name: str) -> str:
     try:
         task = find_task_by_title(task_name)
-        if not task: return f"Lưu ý: Không tìm thấy task '{task_name}' trên Notion để cập nhật tự động."
+        if not task:
+            return f"Lưu ý: Không tìm thấy task '{task_name}' trên Notion để cập nhật tự động."
         update_task_status(task["id"], done=True)
         update_status_note(task["id"], f"Hoàn thành lúc {datetime.now(VN).strftime('%H:%M')}")
         return f"Hệ thống đã cập nhật xong task '{task_name}' trên Notion."
@@ -383,28 +414,89 @@ async def process_done(task_name: str) -> str:
 # PHẦN 9: TELEGRAM HANDLERS
 # ==========================================================
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = "Chào TM, tôi bắt đầu phiên làm việc."
+    hour = datetime.now(VN).hour
+    interaction = "morning" if hour < 12 else "chat"
+    msg = "Chào TM, tôi bắt đầu phiên làm việc, cho tôi xem task hôm nay."
     save_message("user", msg)
-    prompt = build_prompt("morning", msg)
-    resp = await generate_ai_response(prompt) or "Chào bạn! Mình đã sẵn sàng đồng hành cùng bạn hôm nay. Bắt đầu thôi!"
+    prompt = build_prompt(interaction, msg)
+    resp = await generate_ai_response(prompt) or "Chào bạn! Đây là task hôm nay, bắt đầu thôi!"
     await update.message.reply_text(resp)
     save_message("bot", resp)
 
 
+def cancel_focus_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    jobs = context.job_queue.get_jobs_by_name(f"focus_checkin_{chat_id}")
+    for j in jobs:
+        j.schedule_removal()
+
+
+async def handle_focus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        minutes = int(context.args[0]) if context.args else Config.FOCUS_DEFAULT_MINUTES
+    except (ValueError, IndexError):
+        minutes = Config.FOCUS_DEFAULT_MINUTES
+
+    chat_id = update.effective_chat.id
+    cancel_focus_job(context, chat_id)
+    update_state(
+        focus_session={"minutes": minutes, "start": datetime.now(VN).isoformat(), "checkins": 0},
+        working=True, working_since=datetime.now(VN).isoformat(),
+        push_count=0, last_task_reminder_at=None,
+    )
+    context.job_queue.run_repeating(
+        focus_checkin, interval=minutes * 60, first=minutes * 60,
+        chat_id=chat_id, name=f"focus_checkin_{chat_id}",
+    )
+    prompt = build_prompt("focus", f"Bắt đầu phiên Focus {minutes} phút.")
+    resp = await generate_ai_response(prompt) or f"Focus {minutes} phút. Bắt đầu ngay."
+    await update.message.reply_text(resp)
+    save_message("bot", resp)
+
+
+async def handle_stop_focus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    cancel_focus_job(context, chat_id)
+    reset_work_and_push()
+    msg = "Đã dừng phiên Focus."
+    await update.message.reply_text(msg)
+    save_message("bot", msg)
+
+
+async def focus_checkin(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    chat_id = job.chat_id
+    state = load_state()
+    session = state.get("focus_session")
+    if not session:
+        job.schedule_removal()
+        return
+    session["checkins"] = session.get("checkins", 0) + 1
+    update_state(focus_session=session)
+    prompt = build_prompt(
+        "focus",
+        f"Đã {session['minutes']} phút trôi qua trong phiên Focus (check-in lần {session['checkins']}). "
+        "Hỏi tiến độ ngắn gọn, giọng nghiêm khắc.",
+    )
+    resp = await generate_ai_response(prompt) or "Đang tới đâu rồi? Báo cáo nhanh."
+    await context.bot.send_message(chat_id=chat_id, text=resp)
+    save_message("bot", resp)
+
+
 async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE, task_name: str = ""):
-    if not task_name and context.args: task_name = " ".join(context.args)
+    if not task_name and context.args:
+        task_name = " ".join(context.args)
     if not task_name:
         prompt = build_prompt("chat", "Tôi vừa xong việc nhưng quên nói tên task.")
-        resp = await generate_ai_response(prompt) or "Tuyệt! Mà bạn vừa hoàn thành task nào thế để mình ghi nhận?"
+        resp = await generate_ai_response(prompt) or "Tuyệt! Bạn vừa hoàn thành task nào để mình ghi nhận?"
         await update.message.reply_text(resp)
         return
 
     info = await process_done(task_name)
     save_message("user", f"Hoàn thành task: {task_name}")
-    # Xong task -> chắc chắn không còn "đang làm" nữa
-    update_state(working=False, working_since=None)
+    cancel_focus_job(context, update.effective_chat.id)
+    reset_work_and_push()
     prompt = build_prompt("done", f"Tôi đã xong task {task_name}", extra_instruction=info)
-    resp = await generate_ai_response(prompt) or f"Ghi nhận nhé! Bạn làm tốt lắm khi xong {task_name}."
+    resp = await generate_ai_response(prompt) or f"Ghi nhận nhé! Bạn làm tốt khi xong {task_name}."
     await update.message.reply_text(resp)
     save_message("bot", resp)
 
@@ -417,85 +509,115 @@ async def handle_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
             content = item["content"]
             try:
                 summary = content.split("[TÓM TẮT HÔM NAY]")[1].split("Sau khi hiển thị")[0].strip()
-            except: summary = content
+            except Exception:
+                summary = content
             break
 
     save_message("user", "Duyệt bản tóm tắt.")
     if summary and approve_memory(summary):
-        prompt = build_prompt("chat", "Tôi đã duyệt bản tóm tắt ngày hôm nay.", extra_instruction="Hệ thống đã lưu xong memory.")
-        resp = await generate_ai_response(prompt) or "Đã nhớ! Mình đã lưu lại những điều quan trọng của hôm nay rồi nhé."
+        prompt = build_prompt("chat", "Tôi đã duyệt bản tóm tắt ngày hôm nay.",
+                               extra_instruction="Hệ thống đã lưu xong memory.")
+        resp = await generate_ai_response(prompt) or "Đã nhớ! Mình đã lưu lại những điều quan trọng của hôm nay."
     else:
-        prompt = build_prompt("chat", "Tôi muốn duyệt nhưng không thấy tóm tắt.", extra_instruction="Lỗi: Không tìm thấy tóm tắt.")
-        resp = await generate_ai_response(prompt) or "Ơ, mình chưa thấy bản tóm tắt nào để duyệt cả. Để mình kiểm tra lại nhé."
+        prompt = build_prompt("chat", "Tôi muốn duyệt nhưng không thấy tóm tắt.",
+                               extra_instruction="Lỗi: Không tìm thấy tóm tắt.")
+        resp = await generate_ai_response(prompt) or "Mình chưa thấy bản tóm tắt nào để duyệt cả."
 
     await update.message.reply_text(resp)
     save_message("bot", resp)
 
 
-async def handle_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, interaction_type: str = "chat", extra: str = ""):
+async def handle_chat(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                       interaction_type: str = "chat", extra: str = "", track_push: bool = False):
     user_text = update.message.text
     save_message("user", user_text)
 
+    state = load_state()
     hour = datetime.now(VN).hour
-    energy_status = "Giờ vàng, ưu tiên Deep Work." if (8 <= hour <= 11 or 14 <= hour <= 17) else "Năng lượng có thể thấp, ưu tiên task nhẹ hoặc nghỉ ngơi."
+    energy_status = "Giờ vàng, ưu tiên Deep Work." if is_golden_hour(hour) else \
+        "Năng lượng có thể thấp, ưu tiên task nhẹ hoặc nghỉ ngơi."
     instruction = f"[ENERGY ADVICE]: {energy_status}"
+    if extra:
+        instruction += f"\n{extra}"
 
-    if load_state().get("working"):
-        instruction += "\n[WORKING MODE]: Người dùng đang làm việc. Không nhắc task, không coaching, chỉ trò chuyện ngắn nếu cần."
+    cooldown_active = False
+    last_reminder = state.get("last_task_reminder_at")
+    if last_reminder:
+        try:
+            mins_since = (datetime.now(VN) - datetime.fromisoformat(last_reminder)).total_seconds() / 60
+            cooldown_active = mins_since < Config.REMINDER_GAP_MINUTES
+        except Exception:
+            pass
 
-    if extra: instruction += f"\n{extra}"
+    push_count = state.get("push_count", 0)
+    forced_probe = track_push and not cooldown_active and not state.get("working") and push_count >= Config.PUSH_LIMIT
 
     prompt = build_prompt(interaction_type, user_text, extra_instruction=instruction)
     resp = await generate_ai_response(prompt) or "Mình đang nghe đây, bạn cứ nói tiếp đi."
     await update.message.reply_text(resp)
     save_message("bot", resp)
 
+    if track_push and not cooldown_active and not state.get("working"):
+        if forced_probe:
+            reset_push()
+        else:
+            record_push()
+
 
 async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("==============================")
-    logger.info("MESSAGE RECEIVED")
-    logger.info(update.message.text if update.message else "NO MESSAGE")
-    logger.info("==============================")
-
     if not update.message or not update.message.text:
         return
-
     user_text = update.message.text
     intent = await detect_intent(user_text)
+    hour = datetime.now(VN).hour
 
     try:
         if intent == "approve":
-            update_state(smalltalk_count=0)
             await handle_approve(update, context)
 
         elif intent == "done":
             task = user_text.lower().replace("done", "").replace("xong rồi", "").replace("hoàn thành", "").strip()
-            update_state(smalltalk_count=0)
             await handle_done(update, context, task)
 
         elif intent == "energy":
-            await handle_chat(update, context, "chat", extra="Người dùng đang cảm thấy mệt mỏi/nản. Hãy phản hồi như một người bạn đồng hành, thấu hiểu và đưa ra lời khuyên phù hợp. Đồng cảm trước, gợi ý sau, KHÔNG dồn dập coaching.")
+            await handle_chat(update, context, "chat",
+                               extra="Người dùng đang cảm thấy mệt mỏi/nản. Xử lý theo khung Push-Probe-Pivot: "
+                                     "KHÔNG mở đầu bằng câu an ủi, đi thẳng vào hỏi nguyên nhân hoặc đề xuất "
+                                     "hướng xử lý phù hợp.",
+                               track_push=True)
 
         elif intent == "working":
             update_state(
-                working=True,
-                working_since=datetime.now(VN).isoformat(),
-                last_topic=user_text[:80],
-                smalltalk_count=0,
+                working=True, working_since=datetime.now(VN).isoformat(),
+                push_count=0, last_task_reminder_at=None, smalltalk_count=0,
             )
             await handle_chat(update, context, "chat", extra="Người dùng vừa xác nhận đang làm việc/tập trung.")
 
         elif intent == "smalltalk":
             state = load_state()
             update_state(smalltalk_count=state.get("smalltalk_count", 0) + 1)
-            await handle_chat(update, context, "chat", extra="Người dùng đang chỉ trò chuyện phiếm/đùa vui. Phản hồi kiểu bạn bè, KHÔNG biến thành coaching.")
+            await handle_chat(update, context, "chat",
+                               extra="Người dùng đang chỉ trò chuyện phiếm/đùa vui. Trả lời kiểu bạn bè, "
+                                     "KHÔNG biến thành coaching.")
 
-        elif intent in ["morning", "sleep"]:
+        elif intent == "morning":
             update_state(smalltalk_count=0)
-            await handle_chat(update, context, intent)
+            await handle_chat(update, context, "morning")
+
+        elif intent == "sleep":
+            if hour >= Config.SLEEP_RITUAL_HOUR:
+                update_state(smalltalk_count=0)
+                await handle_chat(update, context, "sleep")
+            else:
+                # Chưa tới giờ ngủ thật -> coi như dấu hiệu mệt/né việc, không chạy full nghi thức
+                await handle_chat(update, context, "chat",
+                                   extra="Người dùng nói muốn đi ngủ nhưng còn quá sớm trong ngày. "
+                                         "Coi đây như tín hiệu mệt mỏi/muốn né việc — xử lý theo "
+                                         "Push-Probe-Pivot, ĐỪNG chạy nghi thức đi ngủ đầy đủ.",
+                                   track_push=True)
 
         else:
-            await handle_chat(update, context, "chat")
+            await handle_chat(update, context, "chat", track_push=True)
 
     except Exception as e:
         logger.exception(e)
@@ -505,13 +627,12 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================================
-# PHẦN 10: SCHEDULER (MỚI — thật sự được đăng ký, có dedup)
+# PHẦN 10: SCHEDULER
 # ==========================================================
 async def run_scheduled_job(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     if not job or not job.chat_id:
         return
-
     task_type = job.data
     today = datetime.now(VN).strftime("%Y-%m-%d")
 
@@ -527,19 +648,20 @@ async def run_scheduled_job(context: ContextTypes.DEFAULT_TYPE):
 
     if task_type == "sleep":
         history = get_daily_history()
-        sum_prompt = f"Hãy tóm tắt ngày hôm nay một cách tự nhiên, chân thực (dưới 200 từ) dựa trên lịch sử này:\n{json.dumps(history, ensure_ascii=False)}"
+        sum_prompt = (f"Hãy tóm tắt ngày hôm nay tự nhiên, chân thực (dưới 200 từ) dựa trên "
+                      f"lịch sử này:\n{json.dumps(history, ensure_ascii=False)}")
         summary = await generate_ai_response(sum_prompt)
         if summary:
-            msg = f"[TÓM TẮT HÔM NAY]\n{summary}\n\nBạn thấy bản tóm tắt này thế nào? Nhắn \"Duyệt\" để mình lưu vào bộ nhớ nhé!"
+            msg = (f"[TÓM TẮT HÔM NAY]\n{summary}\n\n"
+                   "Bạn thấy bản tóm tắt này thế nào? Nhắn \"Duyệt\" để mình lưu vào bộ nhớ nhé!")
             await context.bot.send_message(chat_id=job.chat_id, text=msg)
             save_message("bot", msg)
 
 
 async def working_timeout_check(context: ContextTypes.DEFAULT_TYPE):
-    """MỚI: tự reset working nếu quá lâu người dùng quên báo 'xong rồi'."""
     state = load_state()
-    if not state.get("working") or not state.get("working_since"):
-        return
+    if not state.get("working") or state.get("focus_session") or not state.get("working_since"):
+        return  # Focus session có cơ chế riêng (check-in), không auto reset
     try:
         since = datetime.fromisoformat(state["working_since"])
     except Exception:
@@ -554,18 +676,16 @@ def schedule_jobs(app: Application):
     jq: JobQueue = app.job_queue
     chat_id = int(Config.CHAT_ID)
 
-    jq.run_daily(run_scheduled_job, time=time(Config.MORNING_HOUR, 0, tzinfo=VN),
+    jq.run_daily(run_scheduled_job, time=time(Config.MORNING_HOUR, Config.MORNING_MINUTE, tzinfo=VN),
                  chat_id=chat_id, name="job_morning", data="morning")
-    jq.run_daily(run_scheduled_job, time=time(Config.AFTERNOON_HOUR, 0, tzinfo=VN),
+    jq.run_daily(run_scheduled_job, time=time(Config.AFTERNOON_HOUR, Config.AFTERNOON_MINUTE, tzinfo=VN),
                  chat_id=chat_id, name="job_focus", data="focus")
-    jq.run_daily(run_scheduled_job, time=time(Config.EVENING_HOUR, 0, tzinfo=VN),
+    jq.run_daily(run_scheduled_job, time=time(Config.EVENING_HOUR, Config.EVENING_MINUTE, tzinfo=VN),
                  chat_id=chat_id, name="job_sleep", data="sleep")
-
-    jq.run_repeating(working_timeout_check,
-                      interval=Config.WORKING_TIMEOUT_CHECK_SECONDS,
+    jq.run_repeating(working_timeout_check, interval=Config.WORKING_TIMEOUT_CHECK_SECONDS,
                       first=60, name="job_working_timeout")
 
-    logger.info("[Scheduler] Đã đăng ký job: morning/focus/sleep + working_timeout_check")
+    logger.info("[Scheduler] Đã đăng ký: 09:07 morning / 15:14 focus / 22:37 sleep + working_timeout_check")
 
 
 # ==========================================================
@@ -573,26 +693,17 @@ def schedule_jobs(app: Application):
 # ==========================================================
 def main():
     Config.validate()
-    app = (
-        Application.builder()
-        .token(Config.BOT_TOKEN)
-        .build()
-    )
+    app = Application.builder().token(Config.BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("done", handle_done))
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            message_router,
-        )
-    )
+    app.add_handler(CommandHandler("focus", handle_focus))
+    app.add_handler(CommandHandler("stopfocus", handle_stop_focus))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
 
     schedule_jobs(app)
 
-    logger.info("==============================")
     logger.info("TM-Bot Started")
-    logger.info("==============================")
     app.run_polling(drop_pending_updates=False)
 
 
