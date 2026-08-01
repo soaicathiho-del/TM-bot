@@ -1,11 +1,6 @@
 """
 TM-Bot v2
 Central Configuration
-
-⚠️ QUY TẮC
-- Chỉ file này được phép đọc os.getenv()
-- Toàn bộ project sẽ dùng Config.xxx
-- Không được gọi os.getenv() ở bất kỳ file nào khác
 """
 import os
 from dotenv import load_dotenv
@@ -24,8 +19,7 @@ class Config:
     # GEMINI
     # ==========================================================
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-    # ⚠️ GIỮ NGUYÊN MODEL
-    GEMINI_MODEL = "gemini-3.6-flash"
+    GEMINI_MODEL = "gemini-3.6-flash"  # ⚠️ GIỮ NGUYÊN MODEL
 
     # ==========================================================
     # NOTION
@@ -44,42 +38,44 @@ class Config:
     # ==========================================================
     # DATA
     # ==========================================================
-    DATA_FOLDER = "data"
     HISTORY_FILE = "data/history.json"
     MEMORY_FILE = "data/memories.json"
     USER_PROFILE_FILE = "data/user-profile.md"
-    STATE_FILE = "data/session_state.json"   # <-- MỚI: state dùng chung
+    STATE_FILE = "data/session_state.json"
 
     # ==========================================================
-    # PROMPTS
+    # AUTOMATION — khớp đúng giờ cron cũ (09:07 / 15:14 / 22:37 GMT+7)
     # ==========================================================
-    PROMPT_FOLDER = "prompts"
-    SYSTEM_PROMPT = "prompts/system/tm-core.md"
-    ADAPTIVE_RULES = "prompts/system/tm-adaptive-rules.md"
-    MORNING_PROMPT = "prompts/tasks/morning.md"
-    FOCUS_PROMPT = "prompts/tasks/focus.md"
-    SLEEP_PROMPT = "prompts/tasks/sleep.md"
+    MORNING_HOUR = 9
+    MORNING_MINUTE = 7
+    AFTERNOON_HOUR = 15
+    AFTERNOON_MINUTE = 14
+    EVENING_HOUR = 22
+    EVENING_MINUTE = 37
 
     # ==========================================================
-    # AUTOMATION (giờ đây ĐƯỢC DÙNG THẬT bởi JobQueue trong main.py)
+    # GIỜ VÀNG — khớp đúng user-profile.md
     # ==========================================================
-    MORNING_HOUR = 7
-    AFTERNOON_HOUR = 13
-    EVENING_HOUR = 21
-    FOCUS_CHECK_INTERVAL_MINUTES = 25
-    REMINDER_INTERVAL_MINUTES = 60
+    WORKING_HOUR_RANGES = [(10, 12), (14, 17)]
 
     # ==========================================================
-    # STATE / ANTI-NAG (MỚI)
+    # NGHI THỨC NGỦ — chỉ chạy full ritual sau giờ này
     # ==========================================================
-    WORKING_TIMEOUT_MINUTES = 90       # quá giờ này mà chưa "xong rồi" -> tự reset working
-    WORKING_TIMEOUT_CHECK_SECONDS = 900  # 15 phút check 1 lần
-    SMALL_TALK_LIMIT = 3               # smalltalk quá N lần -> nhẹ nhàng gợi ý quay lại việc
+    SLEEP_RITUAL_HOUR = 20
 
     # ==========================================================
-    # LOG
+    # STATE / ANTI-NAG
     # ==========================================================
-    LOG_FOLDER = "logs"
+    REMINDER_GAP_MINUTES = 60      # giãn cách nhắc task
+    PUSH_LIMIT = 2                 # tối đa 2 lần Push liên tiếp -> ép Probe
+    SMALL_TALK_LIMIT = 3
+    WORKING_TIMEOUT_MINUTES = 90
+    WORKING_TIMEOUT_CHECK_SECONDS = 900
+
+    # ==========================================================
+    # FOCUS MODE
+    # ==========================================================
+    FOCUS_DEFAULT_MINUTES = 25
 
     # ==========================================================
     # VALIDATION
@@ -93,10 +89,7 @@ class Config:
             "NOTION_TOKEN": cls.NOTION_TOKEN,
             "TM_DAILY_DATABASE_ID": cls.TM_DAILY_DATABASE_ID,
         }
-        missing = []
-        for key, value in required.items():
-            if value == "":
-                missing.append(key)
+        missing = [k for k, v in required.items() if v == ""]
         if missing:
             print("\n==============================")
             print(" TM-Bot Configuration Error")
