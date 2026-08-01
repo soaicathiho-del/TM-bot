@@ -1,34 +1,27 @@
 name: TM Bot
-
 on:
   workflow_dispatch:
-
-  schedule:
-    # 09:07 GMT+7
-    - cron: '7 2 * * *'
-
-    # 15:14 GMT+7
-    - cron: '14 8 * * *'
-
-    # 22:37 GMT+7
-    - cron: '37 15 * * *'
-
+  # Đã tắt lịch tự động — main.py (JobQueue) giờ là nguồn lịch chính,
+  # chạy 24/7 trên cùng ổ đĩa với data/history.json nên luôn có bối cảnh thật.
+  # Bật lại "schedule:" bên dưới CHỈ khi worker (main.py) bị sập dài hạn
+  # và bạn cần gửi tay 1 lần qua "Run workflow" trên GitHub.
+  #
+  # schedule:
+  #   - cron: '7 2 * * *'
+  #   - cron: '14 8 * * *'
+  #   - cron: '37 15 * * *'
 jobs:
   consolidate:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
       - name: Run consolidation
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
