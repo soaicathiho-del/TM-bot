@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import json
 import os
@@ -20,6 +21,10 @@ from notion_service import (
     update_task_status,
     find_task_by_title,
     update_status_note,
+    create_task,
+    get_rules_point_map,
+    get_tasks_by_date_range,
+    get_task_type,
 )
 
 # ==========================================================
@@ -36,11 +41,13 @@ VN = timezone(timedelta(hours=7))
 DEFAULT_STATE = {
     "working": False,
     "working_since": None,
-    "focus_session": None,      # {"minutes": 25, "start": iso, "checkins": 0}
+    "focus_session": None,
     "last_task_reminder_at": None,
     "push_count": 0,
     "smalltalk_count": 0,
     "last_sent": {},
+    "last_summary_at": None,
+    "messages_since_summary": 0,
 }
 
 
@@ -106,9 +113,15 @@ def save_message(role: str, content: str):
     history.append(message)
     save_json(Config.HISTORY_FILE, history[-Config.HISTORY_LIMIT:])
 
+    # Mục 13: đếm tin nhắn mới sau khi đã gửi tóm tắt tối, để tự update lại
+    if role == "user":
+        state = load_state()
+        if state.get("last_summary_at"):
+            update_state(messages_since_summary=state.get("messages_since_summary", 0) + 1)
+
 
 # ==========================================================
-# PHẦN 3.5: SESSION STATE (dùng chung toàn bộ logic)
+# PHẦN 3.5: SESSION STATE
 # ==========================================================
 def load_state() -> dict:
     path = Config.STATE_FILE
@@ -154,7 +167,6 @@ def already_sent_today(task_type: str) -> bool:
 
 
 def record_push():
-    """Đánh dấu bot vừa Push (nhắc/thúc task) — dùng cho cả push_count lẫn reminder cooldown."""
     state = load_state()
     update_state(
         push_count=state.get("push_count", 0) + 1,
@@ -167,7 +179,6 @@ def reset_push():
 
 
 def reset_work_and_push():
-    """Gọi khi user báo đã hành động (done/working) — reset mọi counter liên quan."""
     update_state(
         working=False, working_since=None, focus_session=None,
         push_count=0, last_task_reminder_at=None, smalltalk_count=0,
@@ -253,9 +264,9 @@ def load_today_history_prompt() -> str:
     return "TODAY'S HISTORY (kèm khoảng cách thời gian):\n" + "\n".join(lines)
 
 
-def load_today_tasks_prompt() -> str:
+async def load_today_tasks_prompt() -> str:
     try:
-        tasks = get_today_tasks()
+        tasks = await asyncio.to_thread(get_today_tasks)
         task_lines = []
         for task in tasks:
             try:
@@ -337,7 +348,7 @@ def build_role_prompt() -> str:
     )
 
 
-def build_prompt(interaction_type: str, user_message: str, extra_instruction: str = "") -> str:
+async def build_prompt(interaction_type: str, user_message: str, extra_instruction: str = "") -> str:
     parts = [
         load_system_prompt(),
         load_adaptive_rules_prompt(),
@@ -346,7 +357,7 @@ def build_prompt(interaction_type: str, user_message: str, extra_instruction: st
         load_long_term_memory_prompt(),
         load_state_prompt(),
         load_today_history_prompt(),
-        load_today_tasks_prompt(),
+        await load_today_tasks_prompt(),
         f"CURRENT USER MESSAGE:\nInteraction: {interaction_type}\nUser: {user_message}",
         f"SYSTEM INSTRUCTION:\n{extra_instruction}" if extra_instruction else "",
         build_role_prompt(),
@@ -380,12 +391,16 @@ WORKING_KEYWORDS = [
 SMALLTALK_KEYWORDS = [
     "haha", "hihi", ":))", ":v", "=))", "á đù", "ạ đù", "hehe", "khakha", ":)))",
 ]
+TASK_ADD_KEYWORDS = ["thêm task", "tạo task", "note task", "ghi task mới", "thêm việc", "tạo việc mới"]
+SUGGEST_KEYWORDS = ["nên làm gì", "làm gì trước", "task nào ưu tiên", "việc gì quan trọng nhất", "gợi ý task"]
 
 
 async def detect_intent(user_message: str) -> str:
     text = user_message.lower()
     if any(kw in text for kw in ["duyệt", "approve"]): return "approve"
     if any(kw in text for kw in ["xong rồi", "hoàn thành", "done"]): return "done"
+    if any(kw in text for kw in TASK_ADD_KEYWORDS): return "add_task"
+    if any(kw in text for kw in SUGGEST_KEYWORDS): return "suggest_task"
     if any(kw in text for kw in ["mệt", "đuối", "kiệt sức", "nản"]): return "energy"
     if any(kw in text for kw in ["ngủ", "đi ngủ", "ngủ đây"]): return "sleep"
     if any(kw in text for kw in ["chào buổi sáng", "morning"]): return "morning"
@@ -399,11 +414,11 @@ async def detect_intent(user_message: str) -> str:
 # ==========================================================
 async def process_done(task_name: str) -> str:
     try:
-        task = find_task_by_title(task_name)
+        task = await asyncio.to_thread(find_task_by_title, task_name)
         if not task:
             return f"Lưu ý: Không tìm thấy task '{task_name}' trên Notion để cập nhật tự động."
-        update_task_status(task["id"], done=True)
-        update_status_note(task["id"], f"Hoàn thành lúc {datetime.now(VN).strftime('%H:%M')}")
+        await asyncio.to_thread(update_task_status, task["id"], True)
+        await asyncio.to_thread(update_status_note, task["id"], f"Hoàn thành lúc {datetime.now(VN).strftime('%H:%M')}")
         return f"Hệ thống đã cập nhật xong task '{task_name}' trên Notion."
     except Exception as e:
         logger.error(f"Notion Error: {e}")
@@ -418,15 +433,14 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     interaction = "morning" if hour < 12 else "chat"
     msg = "Chào TM, tôi bắt đầu phiên làm việc, cho tôi xem task hôm nay."
     save_message("user", msg)
-    prompt = build_prompt(interaction, msg)
+    prompt = await build_prompt(interaction, msg)
     resp = await generate_ai_response(prompt) or "Chào bạn! Đây là task hôm nay, bắt đầu thôi!"
     await update.message.reply_text(resp)
     save_message("bot", resp)
 
 
 def cancel_focus_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    jobs = context.job_queue.get_jobs_by_name(f"focus_checkin_{chat_id}")
-    for j in jobs:
+    for j in context.job_queue.get_jobs_by_name(f"focus_checkin_{chat_id}"):
         j.schedule_removal()
 
 
@@ -447,15 +461,14 @@ async def handle_focus(update: Update, context: ContextTypes.DEFAULT_TYPE):
         focus_checkin, interval=minutes * 60, first=minutes * 60,
         chat_id=chat_id, name=f"focus_checkin_{chat_id}",
     )
-    prompt = build_prompt("focus", f"Bắt đầu phiên Focus {minutes} phút.")
+    prompt = await build_prompt("focus", f"Bắt đầu phiên Focus {minutes} phút.")
     resp = await generate_ai_response(prompt) or f"Focus {minutes} phút. Bắt đầu ngay."
     await update.message.reply_text(resp)
     save_message("bot", resp)
 
 
 async def handle_stop_focus(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    cancel_focus_job(context, chat_id)
+    cancel_focus_job(context, update.effective_chat.id)
     reset_work_and_push()
     msg = "Đã dừng phiên Focus."
     await update.message.reply_text(msg)
@@ -472,7 +485,7 @@ async def focus_checkin(context: ContextTypes.DEFAULT_TYPE):
         return
     session["checkins"] = session.get("checkins", 0) + 1
     update_state(focus_session=session)
-    prompt = build_prompt(
+    prompt = await build_prompt(
         "focus",
         f"Đã {session['minutes']} phút trôi qua trong phiên Focus (check-in lần {session['checkins']}). "
         "Hỏi tiến độ ngắn gọn, giọng nghiêm khắc.",
@@ -486,7 +499,7 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE, task_n
     if not task_name and context.args:
         task_name = " ".join(context.args)
     if not task_name:
-        prompt = build_prompt("chat", "Tôi vừa xong việc nhưng quên nói tên task.")
+        prompt = await build_prompt("chat", "Tôi vừa xong việc nhưng quên nói tên task.")
         resp = await generate_ai_response(prompt) or "Tuyệt! Bạn vừa hoàn thành task nào để mình ghi nhận?"
         await update.message.reply_text(resp)
         return
@@ -495,8 +508,72 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE, task_n
     save_message("user", f"Hoàn thành task: {task_name}")
     cancel_focus_job(context, update.effective_chat.id)
     reset_work_and_push()
-    prompt = build_prompt("done", f"Tôi đã xong task {task_name}", extra_instruction=info)
+    prompt = await build_prompt("done", f"Tôi đã xong task {task_name}", extra_instruction=info)
     resp = await generate_ai_response(prompt) or f"Ghi nhận nhé! Bạn làm tốt khi xong {task_name}."
+    await update.message.reply_text(resp)
+    save_message("bot", resp)
+
+
+async def handle_add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    lower = text.lower()
+    trigger = next((kw for kw in TASK_ADD_KEYWORDS if kw in lower), None)
+    idx = (lower.find(trigger) + len(trigger)) if trigger else 0
+    title = text[idx:].strip(" :-").strip()
+
+    save_message("user", text)
+    if not title:
+        msg = "Bạn muốn thêm task gì? Nhắn lại tên task nhé."
+        await update.message.reply_text(msg)
+        save_message("bot", msg)
+        return
+
+    rules_map = await asyncio.to_thread(get_rules_point_map)
+    matched_type = next((t for t in rules_map.keys() if t.lower() in lower), None)
+
+    page = await asyncio.to_thread(create_task, title, matched_type)
+    if page:
+        type_note = f" (loại: {matched_type})" if matched_type else " (chưa phân loại — vào Notion gắn Type sau nhé)"
+        info = f"Đã tạo task '{title}'{type_note} trên Notion."
+    else:
+        info = f"Lỗi: không tạo được task '{title}' trên Notion."
+
+    prompt = await build_prompt("chat", text, extra_instruction=info)
+    resp = await generate_ai_response(prompt) or info
+    await update.message.reply_text(resp)
+    save_message("bot", resp)
+
+
+async def handle_suggest_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    save_message("user", text)
+
+    tasks = await asyncio.to_thread(get_today_tasks)
+    rules_map = await asyncio.to_thread(get_rules_point_map)
+
+    def sort_key(task):
+        t = get_task_type(task)
+        prio = rules_map.get(t, {}).get("priority")
+        return prio if prio is not None else 999
+
+    sorted_tasks = sorted(tasks, key=sort_key)
+    lines = []
+    for t in sorted_tasks:
+        try:
+            title = t["properties"]["Task"]["title"][0]["plain_text"]
+        except Exception:
+            continue
+        ttype = get_task_type(t) or "?"
+        prio = rules_map.get(ttype, {}).get("priority", "?")
+        lines.append(f"- {title} (Type: {ttype}, Priority: {prio})")
+
+    task_list_str = "\n".join(lines) if lines else "Không có task nào."
+    prompt = await build_prompt(
+        "chat", text,
+        extra_instruction=(f"Danh sách task hôm nay đã sắp theo Priority (số nhỏ = ưu tiên cao):\n"
+                            f"{task_list_str}\nĐề xuất 1 task nên làm trước, đúng persona TM."),
+    )
+    resp = await generate_ai_response(prompt) or (f"Ưu tiên: {lines[0]}" if lines else "Chưa có task nào hôm nay.")
     await update.message.reply_text(resp)
     save_message("bot", resp)
 
@@ -515,12 +592,12 @@ async def handle_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     save_message("user", "Duyệt bản tóm tắt.")
     if summary and approve_memory(summary):
-        prompt = build_prompt("chat", "Tôi đã duyệt bản tóm tắt ngày hôm nay.",
-                               extra_instruction="Hệ thống đã lưu xong memory.")
+        prompt = await build_prompt("chat", "Tôi đã duyệt bản tóm tắt ngày hôm nay.",
+                                     extra_instruction="Hệ thống đã lưu xong memory.")
         resp = await generate_ai_response(prompt) or "Đã nhớ! Mình đã lưu lại những điều quan trọng của hôm nay."
     else:
-        prompt = build_prompt("chat", "Tôi muốn duyệt nhưng không thấy tóm tắt.",
-                               extra_instruction="Lỗi: Không tìm thấy tóm tắt.")
+        prompt = await build_prompt("chat", "Tôi muốn duyệt nhưng không thấy tóm tắt.",
+                                     extra_instruction="Lỗi: Không tìm thấy tóm tắt.")
         resp = await generate_ai_response(prompt) or "Mình chưa thấy bản tóm tắt nào để duyệt cả."
 
     await update.message.reply_text(resp)
@@ -552,7 +629,7 @@ async def handle_chat(update: Update, context: ContextTypes.DEFAULT_TYPE,
     push_count = state.get("push_count", 0)
     forced_probe = track_push and not cooldown_active and not state.get("working") and push_count >= Config.PUSH_LIMIT
 
-    prompt = build_prompt(interaction_type, user_text, extra_instruction=instruction)
+    prompt = await build_prompt(interaction_type, user_text, extra_instruction=instruction)
     resp = await generate_ai_response(prompt) or "Mình đang nghe đây, bạn cứ nói tiếp đi."
     await update.message.reply_text(resp)
     save_message("bot", resp)
@@ -578,6 +655,12 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif intent == "done":
             task = user_text.lower().replace("done", "").replace("xong rồi", "").replace("hoàn thành", "").strip()
             await handle_done(update, context, task)
+
+        elif intent == "add_task":
+            await handle_add_task(update, context)
+
+        elif intent == "suggest_task":
+            await handle_suggest_task(update, context)
 
         elif intent == "energy":
             await handle_chat(update, context, "chat",
@@ -609,7 +692,6 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 update_state(smalltalk_count=0)
                 await handle_chat(update, context, "sleep")
             else:
-                # Chưa tới giờ ngủ thật -> coi như dấu hiệu mệt/né việc, không chạy full nghi thức
                 await handle_chat(update, context, "chat",
                                    extra="Người dùng nói muốn đi ngủ nhưng còn quá sớm trong ngày. "
                                          "Coi đây như tín hiệu mệt mỏi/muốn né việc — xử lý theo "
@@ -621,7 +703,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.exception(e)
-        prompt = build_prompt("chat", user_text, extra_instruction="Hệ thống gặp lỗi kỹ thuật nhẹ.")
+        prompt = await build_prompt("chat", user_text, extra_instruction="Hệ thống gặp lỗi kỹ thuật nhẹ.")
         resp = await generate_ai_response(prompt) or "Hình như mình gặp chút trục trặc, bạn nói lại được không?"
         await update.message.reply_text(resp)
 
@@ -640,7 +722,7 @@ async def run_scheduled_job(context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"[Scheduler] Bỏ qua {task_type}, đã gửi hôm nay rồi.")
         return
 
-    prompt = build_prompt(task_type, f"Đến giờ {task_type} rồi.")
+    prompt = await build_prompt(task_type, f"Đến giờ {task_type} rồi.")
     resp = await generate_ai_response(prompt) or f"Đến giờ {task_type} rồi, chúng ta bắt đầu chứ?"
     await context.bot.send_message(chat_id=job.chat_id, text=resp)
     save_message("bot", resp)
@@ -656,12 +738,83 @@ async def run_scheduled_job(context: ContextTypes.DEFAULT_TYPE):
                    "Bạn thấy bản tóm tắt này thế nào? Nhắn \"Duyệt\" để mình lưu vào bộ nhớ nhé!")
             await context.bot.send_message(chat_id=job.chat_id, text=msg)
             save_message("bot", msg)
+            update_state(last_summary_at=datetime.now(VN).isoformat(), messages_since_summary=0)
+
+
+async def resummary_check(context: ContextTypes.DEFAULT_TYPE):
+    """Mục 13: sau 21h, nếu đã gửi tóm tắt và có >=3 tin nhắn mới -> tóm tắt lại."""
+    now = datetime.now(VN)
+    if now.hour < 21:
+        return
+    state = load_state()
+    last_summary_at = state.get("last_summary_at")
+    if not last_summary_at:
+        return
+    try:
+        ts = datetime.fromisoformat(last_summary_at)
+    except Exception:
+        return
+    if ts.strftime("%Y-%m-%d") != now.strftime("%Y-%m-%d"):
+        return
+    if state.get("messages_since_summary", 0) < 3:
+        return
+
+    history = get_daily_history()
+    sum_prompt = (f"Hãy tóm tắt lại ngày hôm nay (đã có thêm hội thoại mới), tự nhiên, chân thực "
+                  f"(dưới 200 từ), dựa trên lịch sử này:\n{json.dumps(history, ensure_ascii=False)}")
+    summary = await generate_ai_response(sum_prompt)
+    if summary:
+        msg = (f"[TÓM TẮT HÔM NAY - CẬP NHẬT]\n{summary}\n\n"
+               "Bạn thấy bản tóm tắt này thế nào? Nhắn \"Duyệt\" để mình lưu vào bộ nhớ nhé!")
+        await context.bot.send_message(chat_id=int(Config.CHAT_ID), text=msg)
+        save_message("bot", msg)
+        update_state(last_summary_at=datetime.now(VN).isoformat(), messages_since_summary=0)
+
+
+async def send_weekly_report(context: ContextTypes.DEFAULT_TYPE):
+    """Mục 15+18: báo cáo tuần + tính điểm theo Rules Point."""
+    now = datetime.now(VN)
+    start_date = (now - timedelta(days=6)).strftime("%Y-%m-%d")
+    end_date = now.strftime("%Y-%m-%d")
+
+    tasks = await asyncio.to_thread(get_tasks_by_date_range, start_date, end_date)
+    rules_map = await asyncio.to_thread(get_rules_point_map)
+
+    total_point = 0
+    done_count = 0
+    total_count = len(tasks)
+    by_type = {}
+
+    for t in tasks:
+        ttype = get_task_type(t) or "Chưa phân loại"
+        done = t.get("properties", {}).get("Done", {}).get("checkbox", False)
+        by_type.setdefault(ttype, {"done": 0, "total": 0})
+        by_type[ttype]["total"] += 1
+        if done:
+            by_type[ttype]["done"] += 1
+            done_count += 1
+            total_point += rules_map.get(ttype, {}).get("point", 0)
+
+    lines = [f"📊 BÁO CÁO TUẦN ({start_date} → {end_date})",
+             f"Hoàn thành: {done_count}/{total_count} task",
+             f"Tổng điểm: {total_point}", ""]
+    for ttype, stat in sorted(by_type.items(), key=lambda x: -x[1]["done"]):
+        lines.append(f"- {ttype}: {stat['done']}/{stat['total']}")
+
+    report_data = "\n".join(lines)
+    prompt = await build_prompt("chat", "Đây là báo cáo tuần.",
+                                 extra_instruction=f"Dữ liệu báo cáo tuần thật:\n{report_data}\n"
+                                                    "Viết lại thành tin nhắn đúng persona TM, ngắn gọn, "
+                                                    "có nhận xét/phản biện nếu thấy pattern đáng chú ý.")
+    resp = await generate_ai_response(prompt) or report_data
+    await context.bot.send_message(chat_id=int(Config.CHAT_ID), text=resp)
+    save_message("bot", resp)
 
 
 async def working_timeout_check(context: ContextTypes.DEFAULT_TYPE):
     state = load_state()
     if not state.get("working") or state.get("focus_session") or not state.get("working_since"):
-        return  # Focus session có cơ chế riêng (check-in), không auto reset
+        return
     try:
         since = datetime.fromisoformat(state["working_since"])
     except Exception:
@@ -684,8 +837,13 @@ def schedule_jobs(app: Application):
                  chat_id=chat_id, name="job_sleep", data="sleep")
     jq.run_repeating(working_timeout_check, interval=Config.WORKING_TIMEOUT_CHECK_SECONDS,
                       first=60, name="job_working_timeout")
+    jq.run_repeating(resummary_check, interval=900, first=120, name="job_resummary_check")
+    # Chủ nhật 21:50 GMT+7. Lưu ý: days=(6,) theo quy ước Thứ 2=0 ... Chủ nhật=6.
+    # Nếu chạy sai ngày thực tế, chỉnh lại số trong "days=" cho khớp.
+    jq.run_daily(send_weekly_report, time=time(21, 50, tzinfo=VN),
+                 days=(6,), chat_id=chat_id, name="job_weekly_report")
 
-    logger.info("[Scheduler] Đã đăng ký: 09:07 morning / 15:14 focus / 22:37 sleep + working_timeout_check")
+    logger.info("[Scheduler] Đã đăng ký đủ: morning/focus/sleep + working_timeout + resummary + weekly_report")
 
 
 # ==========================================================
