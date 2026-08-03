@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 VN = timezone(timedelta(hours=7))
 
 DEFAULT_STATE = {
+    "state_date": None,
     "working": False,
     "working_since": None,
     "focus_session": None,
@@ -113,7 +114,6 @@ def save_message(role: str, content: str):
     history.append(message)
     save_json(Config.HISTORY_FILE, history[-Config.HISTORY_LIMIT:])
 
-    # Mục 13: đếm tin nhắn mới sau khi đã gửi tóm tắt tối, để tự update lại
     if role == "user":
         state = load_state()
         if state.get("last_summary_at"):
@@ -124,15 +124,40 @@ def save_message(role: str, content: str):
 # PHẦN 3.5: SESSION STATE
 # ==========================================================
 def load_state() -> dict:
+    """
+    Đọc state dùng chung. Tự động reset các field theo-NGÀY (working, push_count,
+    focus_session, smalltalk_count, last_task_reminder_at) khi phát hiện sang ngày mới,
+    để tránh push_count/working bị cộng dồn xuyên ngày (bug đã gặp thực tế 8/2/2026).
+    last_sent / last_summary_at KHÔNG bị đụng ở đây vì bản thân chúng đã tự dedup theo ngày.
+    """
     path = Config.STATE_FILE
+    today = datetime.now(VN).strftime("%Y-%m-%d")
     try:
         if not os.path.exists(path):
-            save_state(dict(DEFAULT_STATE))
-            return dict(DEFAULT_STATE)
+            state = dict(DEFAULT_STATE)
+            state["state_date"] = today
+            save_state(state)
+            return state
+
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         merged = dict(DEFAULT_STATE)
         merged.update(data)
+
+        if merged.get("state_date") != today:
+            logger.info(f"[State] Sang ngày mới ({merged.get('state_date')} -> {today}), "
+                        f"reset working/push_count/focus_session/smalltalk_count.")
+            merged.update({
+                "state_date": today,
+                "working": False,
+                "working_since": None,
+                "focus_session": None,
+                "last_task_reminder_at": None,
+                "push_count": 0,
+                "smalltalk_count": 0,
+            })
+            save_state(merged)
+
         return merged
     except Exception as e:
         logger.exception(e)
@@ -387,6 +412,7 @@ async def generate_ai_response(prompt: str, _retry_once: bool = True) -> str:
 WORKING_KEYWORDS = [
     "đang làm", "đang viết", "đang code", "đang tập trung",
     "để t làm đã", "để tao làm đã", "ok đang làm", "ừ đang làm", "đang cày",
+    "làm việc", "làm cho xong", "đang xử lý", "đang chạy task", "làm nốt",
 ]
 SMALLTALK_KEYWORDS = [
     "haha", "hihi", ":))", ":v", "=))", "á đù", "ạ đù", "hehe", "khakha", ":)))",
@@ -742,7 +768,6 @@ async def run_scheduled_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def resummary_check(context: ContextTypes.DEFAULT_TYPE):
-    """Mục 13: sau 21h, nếu đã gửi tóm tắt và có >=3 tin nhắn mới -> tóm tắt lại."""
     now = datetime.now(VN)
     if now.hour < 21:
         return
@@ -772,7 +797,6 @@ async def resummary_check(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_weekly_report(context: ContextTypes.DEFAULT_TYPE):
-    """Mục 15+18: báo cáo tuần + tính điểm theo Rules Point."""
     now = datetime.now(VN)
     start_date = (now - timedelta(days=6)).strftime("%Y-%m-%d")
     end_date = now.strftime("%Y-%m-%d")
@@ -838,8 +862,6 @@ def schedule_jobs(app: Application):
     jq.run_repeating(working_timeout_check, interval=Config.WORKING_TIMEOUT_CHECK_SECONDS,
                       first=60, name="job_working_timeout")
     jq.run_repeating(resummary_check, interval=900, first=120, name="job_resummary_check")
-    # Chủ nhật 21:50 GMT+7. Lưu ý: days=(6,) theo quy ước Thứ 2=0 ... Chủ nhật=6.
-    # Nếu chạy sai ngày thực tế, chỉnh lại số trong "days=" cho khớp.
     jq.run_daily(send_weekly_report, time=time(21, 50, tzinfo=VN),
                  days=(6,), chat_id=chat_id, name="job_weekly_report")
 
