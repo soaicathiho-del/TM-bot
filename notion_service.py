@@ -121,6 +121,19 @@ def update_status_note(page_id, note):
         print(f"[Notion] update_status_note(): {e}")
         return False
 
+def get_all_open_tasks():
+    """Quét TOÀN BỘ task chưa Done, không giới hạn theo ngày — dùng để tick Done
+    kể cả task của ngày mai/tuần này/quá khứ, không chỉ hôm nay."""
+    try:
+        response = notion.databases.query(
+            database_id=Config.TM_DAILY_DATABASE_ID,
+            filter={"property": "Done", "checkbox": {"equals": False}},
+            sorts=[{"property": "Date", "direction": "ascending"}],
+        )
+        return response.get("results", [])
+    except Exception as e:
+        print(f"[Notion] get_all_open_tasks(): {e}")
+        return []
 
 # ==========================================================
 # Rules Point (điểm số)
