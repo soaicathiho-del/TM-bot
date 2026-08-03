@@ -2,6 +2,8 @@ import asyncio
 import logging
 import json
 import os
+import re
+import unicodedata
 from datetime import datetime, timedelta, timezone, time
 
 from telegram import Update
@@ -19,7 +21,6 @@ from gemini_service import ask_gemini
 from notion_service import (
     get_today_tasks,
     update_task_status,
-    find_task_by_title,
     update_status_note,
     create_task,
     get_rules_point_map,
@@ -49,6 +50,8 @@ DEFAULT_STATE = {
     "last_sent": {},
     "last_summary_at": None,
     "messages_since_summary": 0,
+    "pending_task": None,   # {"title": str, "date": str, "guess_type": str|None} khi chờ xác nhận Type
+    "custom_reminders": [], # [{"due_at": iso, "text": str, "sent": bool}, ...]
 }
 
 
@@ -94,6 +97,12 @@ def is_golden_hour(hour: int) -> bool:
     return any(start <= hour <= end for start, end in Config.WORKING_HOUR_RANGES)
 
 
+def strip_diacritics(text: str) -> str:
+    text = unicodedata.normalize('NFD', text)
+    text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
+    return text.replace('đ', 'd').replace('Đ', 'D')
+
+
 # ==========================================================
 # PHẦN 3: LỊCH SỬ
 # ==========================================================
@@ -126,9 +135,8 @@ def save_message(role: str, content: str):
 def load_state() -> dict:
     """
     Đọc state dùng chung. Tự động reset các field theo-NGÀY (working, push_count,
-    focus_session, smalltalk_count, last_task_reminder_at) khi phát hiện sang ngày mới,
-    để tránh push_count/working bị cộng dồn xuyên ngày (bug đã gặp thực tế 8/2/2026).
-    last_sent / last_summary_at KHÔNG bị đụng ở đây vì bản thân chúng đã tự dedup theo ngày.
+    focus_session, smalltalk_count, last_task_reminder_at) khi phát hiện sang ngày mới.
+    last_sent / last_summary_at KHÔNG bị đụng vì bản thân chúng đã tự dedup theo ngày.
     """
     path = Config.STATE_FILE
     today = datetime.now(VN).strftime("%Y-%m-%d")
@@ -419,14 +427,26 @@ SMALLTALK_KEYWORDS = [
 ]
 TASK_ADD_KEYWORDS = ["thêm task", "tạo task", "note task", "ghi task mới", "thêm việc", "tạo việc mới"]
 SUGGEST_KEYWORDS = ["nên làm gì", "làm gì trước", "task nào ưu tiên", "việc gì quan trọng nhất", "gợi ý task"]
+REMIND_KEYWORDS = ["nhắc t", "nhắc tôi", "nhắc mình", "nhớ nhắc", "nhắc lại giúp", "nhắc giúp"]
+DONE_KEYWORDS = ["xong rồi", "hoàn thành", "done"]
+
+# Từ đệm cần loại bỏ khi so khớp tên task / suy đoán Type (KHÔNG phải nội dung thật của task)
+STOPWORDS_VN = {
+    "toi", "ban", "cho", "va", "la", "cua", "de", "mot", "cai", "nay", "hom",
+    "ngay", "mai", "them", "task", "tao", "viec", "moi", "gio", "luon", "voi",
+    "tu", "trong", "duoc", "se", "da", "dang", "co", "khong", "gium", "giup",
+    "kia", "do", "nen", "ma", "lai", "ra", "vao", "roi", "day", "nhe", "nha",
+    "xong", "hoan", "thanh", "done", "nhi", "oi", "di", "a", "ha", "ah",
+}
 
 
 async def detect_intent(user_message: str) -> str:
     text = user_message.lower()
     if any(kw in text for kw in ["duyệt", "approve"]): return "approve"
-    if any(kw in text for kw in ["xong rồi", "hoàn thành", "done"]): return "done"
+    if any(kw in text for kw in DONE_KEYWORDS): return "done"
     if any(kw in text for kw in TASK_ADD_KEYWORDS): return "add_task"
     if any(kw in text for kw in SUGGEST_KEYWORDS): return "suggest_task"
+    if any(kw in text for kw in REMIND_KEYWORDS): return "remind_me"
     if any(kw in text for kw in ["mệt", "đuối", "kiệt sức", "nản"]): return "energy"
     if any(kw in text for kw in ["ngủ", "đi ngủ", "ngủ đây"]): return "sleep"
     if any(kw in text for kw in ["chào buổi sáng", "morning"]): return "morning"
@@ -436,19 +456,192 @@ async def detect_intent(user_message: str) -> str:
 
 
 # ==========================================================
-# PHẦN 8: NOTION
+# PHẦN 8: NOTION HELPERS (tên task, Type, Date)
 # ==========================================================
-async def process_done(task_name: str) -> str:
+def extract_task_title(task_page: dict) -> str:
     try:
-        task = await asyncio.to_thread(find_task_by_title, task_name)
-        if not task:
-            return f"Lưu ý: Không tìm thấy task '{task_name}' trên Notion để cập nhật tự động."
-        await asyncio.to_thread(update_task_status, task["id"], True)
-        await asyncio.to_thread(update_status_note, task["id"], f"Hoàn thành lúc {datetime.now(VN).strftime('%H:%M')}")
-        return f"Hệ thống đã cập nhật xong task '{task_name}' trên Notion."
+        return task_page["properties"]["Task"]["title"][0]["plain_text"]
+    except Exception:
+        return "Unknown"
+
+
+async def process_done_page(task_page: dict) -> str:
+    title = extract_task_title(task_page)
+    try:
+        await asyncio.to_thread(update_task_status, task_page["id"], True)
+        await asyncio.to_thread(update_status_note, task_page["id"],
+                                 f"Hoàn thành lúc {datetime.now(VN).strftime('%H:%M')}")
+        return f"Hệ thống đã cập nhật xong task '{title}' trên Notion."
     except Exception as e:
         logger.error(f"Notion Error: {e}")
-        return "Lưu ý: Gặp lỗi khi cập nhật Notion."
+        return f"Lưu ý: Gặp lỗi khi cập nhật Notion cho task '{title}'."
+
+
+def _tokenize(text: str) -> set:
+    norm = strip_diacritics(text.lower())
+    words = re.findall(r'[a-z0-9]+', norm)
+    return {w for w in words if w not in STOPWORDS_VN and len(w) > 1}
+
+
+def fuzzy_match_task(text: str, tasks: list):
+    """
+    So khớp câu nói của user với tên các task hôm nay bằng overlap từ khóa
+    (bỏ từ đệm), KHÔNG đòi khớp nguyên cụm như Notion 'contains' filter.
+    Trả về (best_task, tie_candidates):
+      - (task, []) nếu match rõ 1 task duy nhất.
+      - (None, [task1, task2,...]) nếu bị tie (nhiều task cùng điểm cao nhất).
+      - (None, []) nếu không khớp task nào.
+    """
+    target_tokens = _tokenize(text)
+    if not target_tokens:
+        return None, []
+
+    scored = []
+    for task in tasks:
+        title = extract_task_title(task)
+        title_tokens = _tokenize(title)
+        overlap = target_tokens & title_tokens
+        if overlap:
+            scored.append((task, len(overlap)))
+
+    if not scored:
+        return None, []
+
+    scored.sort(key=lambda x: -x[1])
+    top_score = scored[0][1]
+    top_matches = [t for t, s in scored if s == top_score]
+
+    if len(top_matches) == 1:
+        return top_matches[0], []
+    return None, top_matches
+
+
+def match_task_type(text: str, rules_map: dict):
+    """Khớp Type RÕ RÀNG (user tự nói số/tên) -> (type_name, matched_by) hoặc (None, None)."""
+    lower = text.lower()
+    norm = strip_diacritics(lower)
+
+    m = re.search(r'\b(?:type|loai|loại)\s*[:#]?\s*(\d)\b', norm)
+    if m:
+        num = int(m.group(1))
+        for type_name, info in rules_map.items():
+            if info.get("priority") == num:
+                return type_name, "priority_number"
+
+    for type_name in rules_map.keys():
+        if type_name.lower() in lower:
+            return type_name, "exact"
+
+    for type_name in rules_map.keys():
+        type_norm = strip_diacritics(type_name.lower())
+        if type_norm in norm:
+            return type_name, "fuzzy_no_diacritics"
+
+    return None, None
+
+
+def guess_type_by_description(text: str, rules_map: dict):
+    """
+    Suy đoán Type dựa trên overlap từ khóa giữa tiêu đề task và (Tên Type + Description).
+    Trả về (type_name, description, score) hoặc (None, None, 0) nếu không đoán được / bị tie.
+    """
+    target_tokens = _tokenize(text)
+    if not target_tokens:
+        return None, None, 0
+
+    scored = []
+    for type_name, info in rules_map.items():
+        desc = info.get("description", "") or ""
+        type_tokens = _tokenize(type_name) | _tokenize(desc)
+        overlap = target_tokens & type_tokens
+        if overlap:
+            scored.append((type_name, desc, len(overlap)))
+
+    if not scored:
+        return None, None, 0
+
+    scored.sort(key=lambda x: -x[2])
+    best = scored[0]
+    if len(scored) > 1 and scored[1][2] == best[2]:
+        return None, None, 0  # 2 loại khớp ngang nhau -> không đoán bừa, hỏi thẳng
+
+    return best
+
+
+def parse_task_date(text: str) -> str:
+    lower = strip_diacritics(text.lower())
+    today = datetime.now(VN)
+    if "ngay mai" in lower or re.search(r'\bmai\b', lower):
+        return (today + timedelta(days=1)).strftime("%Y-%m-%d")
+    if "hom qua" in lower:
+        return (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    return today.strftime("%Y-%m-%d")
+
+
+def parse_reminder_datetime(text: str):
+    """
+    Hiểu giờ hẹn nhắc lại. Hỗ trợ:
+    - Tương đối: "30 phút nữa", "2 tiếng nữa"
+    - Giờ cụ thể: "15h", "15h30", "3h chiều" (tự +12 nếu <=7h và có chiều/tối)
+    - Mơ hồ: sáng/trưa/chiều/tối/khuya -> quy ước 8h/12h/15h/19h/22h
+    - "mai" -> cộng thêm 1 ngày
+    Nếu không nhận diện được gì -> mặc định 2 tiếng nữa (báo rõ cho user biết để họ tự sửa nếu sai).
+    """
+    norm = strip_diacritics(text.lower())
+    now = datetime.now(VN)
+
+    m = re.search(r'(\d+)\s*phut\s*nua', norm)
+    if m:
+        return now + timedelta(minutes=int(m.group(1)))
+    m = re.search(r'(\d+)\s*(tieng|gio)\s*nua', norm)
+    if m:
+        return now + timedelta(hours=int(m.group(1)))
+
+    hour = minute = None
+    m = re.search(r'\b(\d{1,2})\s*h\s*(\d{0,2})\b', norm)
+    if m:
+        hour = int(m.group(1))
+        minute = int(m.group(2)) if m.group(2) else 0
+        if hour <= 7 and ("chieu" in norm or "toi" in norm):
+            hour += 12
+
+    if hour is None:
+        for kw, h in [("sang", 8), ("trua", 12), ("chieu", 15), ("toi", 19), ("khuya", 22)]:
+            if kw in norm:
+                hour, minute = h, 0
+                break
+
+    if hour is None:
+        return now + timedelta(hours=2)
+
+    due = now.replace(hour=hour, minute=minute or 0, second=0, microsecond=0)
+    if "mai" in norm:
+        due += timedelta(days=1)
+    elif due <= now:
+        due += timedelta(days=1)
+    return due
+
+
+async def handle_remind_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    save_message("user", text)
+
+    due_dt = parse_reminder_datetime(text)
+    state = load_state()
+    reminders = state.get("custom_reminders", [])
+    reminders.append({"due_at": due_dt.isoformat(), "text": text, "sent": False})
+    update_state(custom_reminders=reminders)
+
+    due_str = due_dt.strftime("%H:%M %d/%m")
+    msg = f"Đã ghi nhớ, mình sẽ nhắc bạn khoảng {due_str}: \"{text}\"\n(nếu giờ này sai ý bạn, nhắn lại rõ giờ hơn nhé)."
+    await update.message.reply_text(msg)
+    save_message("bot", msg)
+
+
+def format_type_options(rules_map: dict) -> str:
+    items = sorted(rules_map.items(),
+                    key=lambda x: (x[1].get("priority") if x[1].get("priority") is not None else 999))
+    return "\n".join(f"{info.get('priority', '?')}. {name}" for name, info in items)
 
 
 # ==========================================================
@@ -521,26 +714,79 @@ async def focus_checkin(context: ContextTypes.DEFAULT_TYPE):
     save_message("bot", resp)
 
 
-async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE, task_name: str = ""):
-    if not task_name and context.args:
-        task_name = " ".join(context.args)
-    if not task_name:
-        prompt = await build_prompt("chat", "Tôi vừa xong việc nhưng quên nói tên task.")
-        resp = await generate_ai_response(prompt) or "Tuyệt! Bạn vừa hoàn thành task nào để mình ghi nhận?"
-        await update.message.reply_text(resp)
+async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE, raw_text: str = ""):
+    """
+    raw_text: phần câu còn lại sau khi đã bóc từ khóa 'done/xong rồi/hoàn thành' (có thể còn
+    lẫn từ đệm như 'task', 'nhé', 'r'...). Dùng fuzzy_match_task để tìm đúng task, KHÔNG đòi
+    khớp nguyên cụm.
+    """
+    if not raw_text and context.args:
+        raw_text = " ".join(context.args)
+
+    today_tasks = await asyncio.to_thread(get_today_tasks)
+
+    matched_task = None
+    tie_candidates = []
+
+    if not raw_text.strip():
+        if len(today_tasks) == 1:
+            matched_task = today_tasks[0]
+        elif len(today_tasks) > 1:
+            tie_candidates = today_tasks
+    else:
+        matched_task, tie_candidates = fuzzy_match_task(raw_text, today_tasks)
+
+    if tie_candidates:
+        titles = [extract_task_title(t) for t in tie_candidates]
+        msg = "Bạn vừa xong task nào trong số này?\n" + "\n".join(f"- {t}" for t in titles)
+        save_message("user", update.message.text)
+        await update.message.reply_text(msg)
+        save_message("bot", msg)
         return
 
-    info = await process_done(task_name)
-    save_message("user", f"Hoàn thành task: {task_name}")
+    save_message("user", update.message.text)
     cancel_focus_job(context, update.effective_chat.id)
     reset_work_and_push()
-    prompt = await build_prompt("done", f"Tôi đã xong task {task_name}", extra_instruction=info)
-    resp = await generate_ai_response(prompt) or f"Ghi nhận nhé! Bạn làm tốt khi xong {task_name}."
+
+    if matched_task:
+        title = extract_task_title(matched_task)
+        info = await process_done_page(matched_task)
+        prompt = await build_prompt("done", f"Tôi đã xong task {title}", extra_instruction=info)
+        resp = await generate_ai_response(prompt) or f"Ghi nhận nhé! Bạn làm tốt khi xong {title}."
+    else:
+        # Không tìm thấy task khớp trong Notion -> vẫn ghi nhận lời user, không bịa lý do
+        info = (f"Không tìm thấy task nào trong danh sách Notion hôm nay khớp với "
+                f"'{raw_text.strip()}'. Có thể task đã Done từ trước, hoặc chưa có trên Notion.")
+        prompt = await build_prompt("chat", update.message.text, extra_instruction=info)
+        resp = await generate_ai_response(prompt) or (
+            f"Ghi nhận là bạn đã xong việc, nhưng mình không thấy task khớp trên Notion — "
+            f"kiểm tra lại tên task giúp mình nhé."
+        )
+
+    await update.message.reply_text(resp)
+    save_message("bot", resp)
+
+
+async def _finalize_create_task(update: Update, title: str, task_type: str, task_date: str):
+    page = await asyncio.to_thread(create_task, title, task_type, task_date)
+    if page:
+        info = f"Đã tạo task trên Notion:\n- Task: {title}\n- Type: {task_type}\n- Date: {task_date}"
+    else:
+        info = f"Lỗi: không tạo được task '{title}' trên Notion."
+    prompt = await build_prompt("chat", f"Thêm task {title}", extra_instruction=info)
+    resp = await generate_ai_response(prompt) or info
     await update.message.reply_text(resp)
     save_message("bot", resp)
 
 
 async def handle_add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Bắt buộc đủ 3 trường Task/Type/Date mới tạo task.
+    - Task: lấy từ câu nói (sau từ khóa trigger).
+    - Date: mặc định hôm nay, tự hiểu "mai"/"hôm qua".
+    - Type: nếu user nói rõ (số/tên) -> tạo luôn. Nếu không -> đoán theo Description, hỏi xác nhận.
+            Nếu không đoán nổi (không khớp từ nào, hoặc khớp ngang nhau) -> hỏi thẳng chọn số.
+    """
     text = update.message.text
     lower = text.lower()
     trigger = next((kw for kw in TASK_ADD_KEYWORDS if kw in lower), None)
@@ -549,25 +795,88 @@ async def handle_add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     save_message("user", text)
     if not title:
-        msg = "Bạn muốn thêm task gì? Nhắn lại tên task nhé."
+        msg = "Bạn muốn thêm task gì? Nhắn tên task nhé, mình sẽ tự đoán loại và ngày."
         await update.message.reply_text(msg)
         save_message("bot", msg)
         return
 
     rules_map = await asyncio.to_thread(get_rules_point_map)
-    matched_type = next((t for t in rules_map.keys() if t.lower() in lower), None)
+    matched_type, matched_by = match_task_type(text, rules_map)
+    task_date = parse_task_date(text)
 
-    page = await asyncio.to_thread(create_task, title, matched_type)
-    if page:
-        type_note = f" (loại: {matched_type})" if matched_type else " (chưa phân loại — vào Notion gắn Type sau nhé)"
-        info = f"Đã tạo task '{title}'{type_note} trên Notion."
+    if matched_by == "priority_number":
+        title = re.sub(r'\b(?:type|loai|loại)\s*[:#]?\s*\d\b', '', title, flags=re.IGNORECASE).strip(" ,-")
+
+    if matched_type:
+        # User đã nói rõ Type -> đủ 3 trường, tạo ngay, không cần xác nhận
+        await _finalize_create_task(update, title, matched_type, task_date)
+        return
+
+    # Chưa rõ Type -> đoán theo Description
+    guess_type, guess_desc, score = guess_type_by_description(title, rules_map)
+    options_text = format_type_options(rules_map)
+
+    if guess_type:
+        update_state(pending_task={"title": title, "date": task_date, "guess_type": guess_type})
+        msg = (f"Mình đoán task '{title}' thuộc loại **{guess_type}** "
+               f"(dựa theo mô tả: \"{guess_desc}\").\n"
+               f"Đúng không? Gõ \"đúng\" để xác nhận, hoặc gõ đúng số loại nếu mình đoán sai:\n{options_text}")
     else:
-        info = f"Lỗi: không tạo được task '{title}' trên Notion."
+        update_state(pending_task={"title": title, "date": task_date, "guess_type": None})
+        msg = f"Task '{title}' thuộc loại nào? Mình chưa đoán được, chọn số nhé:\n{options_text}"
 
-    prompt = await build_prompt("chat", text, extra_instruction=info)
-    resp = await generate_ai_response(prompt) or info
-    await update.message.reply_text(resp)
-    save_message("bot", resp)
+    await update.message.reply_text(msg)
+    save_message("bot", msg)
+
+
+async def handle_task_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Xử lý tin nhắn KẾ TIẾP khi đang có pending_task chờ xác nhận Type. Trả về True nếu đã xử lý."""
+    text = update.message.text
+    norm = strip_diacritics(text.lower())
+    state = load_state()
+    pending = state.get("pending_task")
+    if not pending:
+        return False
+
+    save_message("user", text)
+
+    if any(kw in norm for kw in ["huy", "bo qua", "cancel", "thoi khoi"]):
+        update_state(pending_task=None)
+        msg = "Đã hủy, không tạo task này."
+        await update.message.reply_text(msg)
+        save_message("bot", msg)
+        return True
+
+    rules_map = await asyncio.to_thread(get_rules_point_map)
+    final_type = None
+
+    m = re.search(r'\b([1-6])\b', norm)
+    if m:
+        num = int(m.group(1))
+        for type_name, info in rules_map.items():
+            if info.get("priority") == num:
+                final_type = type_name
+                break
+
+    if not final_type and pending.get("guess_type"):
+        if (re.search(r'\b(dung|chuan|yes)\b', norm) or "xac nhan" in norm
+                or norm.strip() in ("ok", "u", "ok.", "u.", "duoc", "duoc roi")):
+            final_type = pending["guess_type"]
+
+    if not final_type:
+        matched_type, _ = match_task_type(text, rules_map)
+        final_type = matched_type
+
+    if not final_type:
+        options_text = format_type_options(rules_map)
+        msg = f"Chưa rõ loại task. Chọn đúng 1 số nhé:\n{options_text}"
+        await update.message.reply_text(msg)
+        save_message("bot", msg)
+        return True
+
+    update_state(pending_task=None)
+    await _finalize_create_task(update, pending["title"], final_type, pending["date"])
+    return True
 
 
 async def handle_suggest_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -585,10 +894,7 @@ async def handle_suggest_task(update: Update, context: ContextTypes.DEFAULT_TYPE
     sorted_tasks = sorted(tasks, key=sort_key)
     lines = []
     for t in sorted_tasks:
-        try:
-            title = t["properties"]["Task"]["title"][0]["plain_text"]
-        except Exception:
-            continue
+        title = extract_task_title(t)
         ttype = get_task_type(t) or "?"
         prio = rules_map.get(ttype, {}).get("priority", "?")
         lines.append(f"- {title} (Type: {ttype}, Priority: {prio})")
@@ -667,9 +973,23 @@ async def handle_chat(update: Update, context: ContextTypes.DEFAULT_TYPE,
             record_push()
 
 
+def _strip_done_keywords(text: str) -> str:
+    lower = text.lower()
+    for kw in DONE_KEYWORDS:
+        lower = lower.replace(kw, "")
+    return lower.strip()
+
+
 async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
+
+    state = load_state()
+    if state.get("pending_task"):
+        handled = await handle_task_confirmation(update, context)
+        if handled:
+            return
+
     user_text = update.message.text
     intent = await detect_intent(user_text)
     hour = datetime.now(VN).hour
@@ -679,14 +999,17 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_approve(update, context)
 
         elif intent == "done":
-            task = user_text.lower().replace("done", "").replace("xong rồi", "").replace("hoàn thành", "").strip()
-            await handle_done(update, context, task)
+            raw_text = _strip_done_keywords(user_text)
+            await handle_done(update, context, raw_text)
 
         elif intent == "add_task":
             await handle_add_task(update, context)
 
         elif intent == "suggest_task":
             await handle_suggest_task(update, context)
+
+        elif intent == "remind_me":
+            await handle_remind_me(update, context)
 
         elif intent == "energy":
             await handle_chat(update, context, "chat",
@@ -835,6 +1158,58 @@ async def send_weekly_report(context: ContextTypes.DEFAULT_TYPE):
     save_message("bot", resp)
 
 
+async def check_custom_reminders(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Quét data/session_state.json mỗi 5 phút để gửi các lời nhắc "nhắc t lúc..." đến hạn.
+    Đọc từ file (không dùng JobQueue.run_once) để không bị mất lời nhắc nếu worker restart
+    giữa chừng — đây chính là lỗi đã gặp thực tế (bot nói "đã note" nhưng không có gì lưu lại).
+    """
+    state = load_state()
+    reminders = state.get("custom_reminders", [])
+    if not reminders:
+        return
+
+    now = datetime.now(VN)
+    changed = False
+    remaining = []
+
+    for r in reminders:
+        if r.get("sent"):
+            try:
+                due = datetime.fromisoformat(r["due_at"])
+                if now - due > timedelta(days=1):
+                    changed = True
+                    continue  # dọn rác lời nhắc cũ đã gửi quá 1 ngày
+            except Exception:
+                pass
+            remaining.append(r)
+            continue
+
+        try:
+            due = datetime.fromisoformat(r["due_at"])
+        except Exception:
+            remaining.append(r)
+            continue
+
+        if now >= due:
+            prompt = await build_prompt(
+                "chat", r["text"],
+                extra_instruction=(f"Đây là lời nhắc người dùng tự đặt trước đó lúc "
+                                    f"{due.strftime('%H:%M %d/%m')}: \"{r['text']}\". "
+                                    "Nhắc lại đúng tinh thần TM, ngắn gọn, thúc đẩy hành động."),
+            )
+            resp = await generate_ai_response(prompt) or f"Nhắc bạn: {r['text']}"
+            await context.bot.send_message(chat_id=int(Config.CHAT_ID), text=resp)
+            save_message("bot", resp)
+            r["sent"] = True
+            changed = True
+
+        remaining.append(r)
+
+    if changed:
+        update_state(custom_reminders=remaining)
+
+
 async def working_timeout_check(context: ContextTypes.DEFAULT_TYPE):
     state = load_state()
     if not state.get("working") or state.get("focus_session") or not state.get("working_since"):
@@ -862,6 +1237,7 @@ def schedule_jobs(app: Application):
     jq.run_repeating(working_timeout_check, interval=Config.WORKING_TIMEOUT_CHECK_SECONDS,
                       first=60, name="job_working_timeout")
     jq.run_repeating(resummary_check, interval=900, first=120, name="job_resummary_check")
+    jq.run_repeating(check_custom_reminders, interval=300, first=45, name="job_custom_reminders")
     jq.run_daily(send_weekly_report, time=time(21, 50, tzinfo=VN),
                  days=(6,), chat_id=chat_id, name="job_weekly_report")
 
