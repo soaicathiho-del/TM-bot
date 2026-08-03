@@ -44,14 +44,14 @@ class Config:
     STATE_FILE = "data/session_state.json"
 
     # ==========================================================
-    # AUTOMATION — khớp đúng giờ cron cũ (09:07 / 15:14 / 22:37 GMT+7)
+    # AUTOMATION — khớp đúng giờ cron cũ (06:07 / 13:14 / 22:07 GMT+7)
     # ==========================================================
-    MORNING_HOUR = 9
+    MORNING_HOUR = 6
     MORNING_MINUTE = 7
-    AFTERNOON_HOUR = 15
+    AFTERNOON_HOUR = 13
     AFTERNOON_MINUTE = 14
     EVENING_HOUR = 22
-    EVENING_MINUTE = 37
+    EVENING_MINUTE = 7
 
     # ==========================================================
     # GIỜ VÀNG — khớp đúng user-profile.md
