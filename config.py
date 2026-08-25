@@ -19,7 +19,14 @@ class Config:
     # GEMINI
     # ==========================================================
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-    GEMINI_MODEL = "gemini-3.6-flash"  # ⚠️ GIỮ NGUYÊN MODEL
+    # Model chính cho chat văn bản của TM-bot.
+    GEMINI_MODEL = "gemini-3.5-flash-lite"
+    # Tự động thử lần lượt khi model chính bị hết quota hoặc tạm thời không khả dụng.
+    GEMINI_FALLBACK_MODELS = (
+        "gemini-3.1-flash-lite",
+        "gemini-3-flash",
+        "gemini-2.5-flash",
+    )
 
     # ==========================================================
     # NOTION
@@ -44,7 +51,7 @@ class Config:
     STATE_FILE = "data/session_state.json"
 
     # ==========================================================
-    # AUTOMATION — khớp đúng giờ cron cũ (06:07 / 13:14 / 22:07 GMT+7)
+    # AUTOMATION — GMT+7
     # ==========================================================
     MORNING_HOUR = 6
     MORNING_MINUTE = 7
@@ -54,20 +61,20 @@ class Config:
     EVENING_MINUTE = 7
 
     # ==========================================================
-    # GIỜ VÀNG — khớp đúng user-profile.md
+    # GIỜ VÀNG
     # ==========================================================
     WORKING_HOUR_RANGES = [(10, 12), (14, 17)]
 
     # ==========================================================
-    # NGHI THỨC NGỦ — chỉ chạy full ritual sau giờ này
+    # NGHI THỨC NGỦ
     # ==========================================================
     SLEEP_RITUAL_HOUR = 20
 
     # ==========================================================
     # STATE / ANTI-NAG
     # ==========================================================
-    REMINDER_GAP_MINUTES = 60      # giãn cách nhắc task
-    PUSH_LIMIT = 2                 # tối đa 2 lần Push liên tiếp -> ép Probe
+    REMINDER_GAP_MINUTES = 60
+    PUSH_LIMIT = 2
     SMALL_TALK_LIMIT = 3
     WORKING_TIMEOUT_MINUTES = 90
     WORKING_TIMEOUT_CHECK_SECONDS = 900
@@ -89,7 +96,7 @@ class Config:
             "NOTION_TOKEN": cls.NOTION_TOKEN,
             "TM_DAILY_DATABASE_ID": cls.TM_DAILY_DATABASE_ID,
         }
-        missing = [k for k, v in required.items() if v == ""]
+        missing = [key for key, value in required.items() if value == ""]
         if missing:
             print("\n==============================")
             print(" TM-Bot Configuration Error")
