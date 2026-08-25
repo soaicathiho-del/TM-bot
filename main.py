@@ -372,12 +372,14 @@ def build_role_prompt() -> str:
             "ROLE:\nBạn đồng thời là Planner, Coach, Accountability Partner. "
             "Phản hồi tự nhiên, gần gũi như con người. Tuyệt đối không nói mình là AI. "
             "NGƯỜI DÙNG ĐANG LÀM VIỆC — SUPPORT MODE: không thúc giục, không nhắc task, "
-            "không coaching. Chỉ đồng hành nhẹ nếu họ chủ động nói chuyện."
+            "không coaching. Chỉ đồng hành nhẹ nếu họ chủ động nói chuyện. "
+            "Luôn trả lời đúng câu hiện tại trước; không xúc phạm, không quy chụp."
         )
     return (
         "ROLE:\nBạn đồng thời là Planner, Coach, Accountability Partner. "
         "Phản hồi tự nhiên, gần gũi như con người. Tuyệt đối không nói mình là AI. "
-        "Ưu tiên hành động và động viên người dùng."
+        "Ưu tiên trả lời đúng câu hỏi/cảm xúc hiện tại trước; chỉ coaching khi có liên quan. "
+        "Được thẳng nhưng không xúc phạm, không quy chụp và không ra mệnh lệnh vô cớ."
     )
 
 
@@ -402,15 +404,16 @@ async def build_prompt(interaction_type: str, user_message: str, extra_instructi
 # PHẦN 6: AI ENGINE
 # ==========================================================
 async def generate_ai_response(prompt: str, _retry_once: bool = True) -> str:
+    """Ask Gemini once and return an empty string when the AI layer is unavailable.
+
+    The Gemini service owns model fallback. Retrying here caused duplicate requests
+    and made quota errors look like a broken conversation.
+    """
     try:
         response = await ask_gemini(prompt)
-        response = response.strip() if response else ""
-        if not response and _retry_once:
-            logger.warning("Empty response from Gemini, retrying once...")
-            return await generate_ai_response(prompt, _retry_once=False)
-        return response
+        return response.strip() if response else ""
     except Exception as e:
-        logger.error(f"AI Engine Error: {e}")
+        logger.error("AI Engine Error: %s", e)
         return ""
 
 
@@ -429,6 +432,11 @@ TASK_ADD_KEYWORDS = ["thêm task", "tạo task", "note task", "ghi task mới", 
 SUGGEST_KEYWORDS = ["nên làm gì", "làm gì trước", "task nào ưu tiên", "việc gì quan trọng nhất", "gợi ý task"]
 REMIND_KEYWORDS = ["nhắc t", "nhắc tôi", "nhắc mình", "nhớ nhắc", "nhắc lại giúp", "nhắc giúp"]
 DONE_KEYWORDS = ["xong rồi", "hoàn thành", "done"]
+FEEDBACK_KEYWORDS = [
+    "sai", "nhận nhầm", "không có yêu cầu", "ko có yêu cầu",
+    "đừng tạo task", "không phải lệnh", "check lại flow", "check lại quy trình",
+    "đề xuất fix bot", "lỗi bot", "code đang sai",
+]
 
 # Từ đệm cần loại bỏ khi so khớp tên task / suy đoán Type (KHÔNG phải nội dung thật của task)
 STOPWORDS_VN = {
@@ -440,8 +448,16 @@ STOPWORDS_VN = {
 }
 
 
+def is_feedback_message(user_message: str) -> bool:
+    text = strip_diacritics(user_message.lower())
+    return any(strip_diacritics(keyword) in text for keyword in FEEDBACK_KEYWORDS)
+
+
 async def detect_intent(user_message: str) -> str:
     text = user_message.lower()
+    # Feedback/bug report luôn được ưu tiên trước action keyword. Việc một câu
+    # có chữ "task", "deadline" hoặc "nhắc" không đủ để tạo dữ liệu.
+    if is_feedback_message(user_message): return "feedback"
     if any(kw in text for kw in ["duyệt", "approve"]): return "approve"
     if any(kw in text for kw in DONE_KEYWORDS): return "done"
     if any(kw in text for kw in TASK_ADD_KEYWORDS): return "add_task"
@@ -468,13 +484,21 @@ def extract_task_title(task_page: dict) -> str:
 async def process_done_page(task_page: dict) -> str:
     title = extract_task_title(task_page)
     try:
-        await asyncio.to_thread(update_task_status, task_page["id"], True)
-        await asyncio.to_thread(update_status_note, task_page["id"],
-                                 f"Hoàn thành lúc {datetime.now(VN).strftime('%H:%M')}")
-        return f"Hệ thống đã cập nhật xong task '{title}' trên Notion."
+        status_ok = await asyncio.to_thread(update_task_status, task_page["id"], True)
+        note_ok = await asyncio.to_thread(
+            update_status_note,
+            task_page["id"],
+            f"Hoàn thành lúc {datetime.now(VN).strftime('%H:%M')}",
+        )
+        if status_ok and note_ok:
+            return f"Đã cập nhật Done và Status Note cho task '{title}' trên Notion."
+        if status_ok:
+            return (f"Đã cập nhật Done cho task '{title}' trên Notion, "
+                    "nhưng Status Note chưa cập nhật được.")
+        return f"Chưa cập nhật được trạng thái task '{title}' trên Notion."
     except Exception as e:
-        logger.error(f"Notion Error: {e}")
-        return f"Lưu ý: Gặp lỗi khi cập nhật Notion cho task '{title}'."
+        logger.exception("Notion error while completing task %s", title)
+        return f"Chưa cập nhật được task '{title}' trên Notion."
 
 
 def _tokenize(text: str) -> set:
@@ -571,6 +595,8 @@ def guess_type_by_description(text: str, rules_map: dict):
 def parse_task_date(text: str) -> str:
     lower = strip_diacritics(text.lower())
     today = datetime.now(VN)
+    if re.search(r'\bngay\s+mot\b', lower):
+        return (today + timedelta(days=2)).strftime("%Y-%m-%d")
     if "ngay mai" in lower or re.search(r'\bmai\b', lower):
         return (today + timedelta(days=1)).strftime("%Y-%m-%d")
     if "hom qua" in lower:
@@ -780,13 +806,7 @@ async def _finalize_create_task(update: Update, title: str, task_type: str, task
 
 
 async def handle_add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Bắt buộc đủ 3 trường Task/Type/Date mới tạo task.
-    - Task: lấy từ câu nói (sau từ khóa trigger).
-    - Date: mặc định hôm nay, tự hiểu "mai"/"hôm qua".
-    - Type: nếu user nói rõ (số/tên) -> tạo luôn. Nếu không -> đoán theo Description, hỏi xác nhận.
-            Nếu không đoán nổi (không khớp từ nào, hoặc khớp ngang nhau) -> hỏi thẳng chọn số.
-    """
+    """Parse a task and require deadline confirmation before creating anything."""
     text = update.message.text
     lower = text.lower()
     trigger = next((kw for kw in TASK_ADD_KEYWORDS if kw in lower), None)
@@ -795,7 +815,7 @@ async def handle_add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     save_message("user", text)
     if not title:
-        msg = "Bạn muốn thêm task gì? Nhắn tên task nhé, mình sẽ tự đoán loại và ngày."
+        msg = "Bạn muốn thêm task gì? Nhắn tên task nhé."
         await update.message.reply_text(msg)
         save_message("bot", msg)
         return
@@ -805,34 +825,40 @@ async def handle_add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task_date = parse_task_date(text)
 
     if matched_by == "priority_number":
-        title = re.sub(r'\b(?:type|loai|loại)\s*[:#]?\s*\d\b', '', title, flags=re.IGNORECASE).strip(" ,-")
+        title = re.sub(
+            r'\b(?:type|loai|loại)\s*[:#]?\s*\d\b',
+            '',
+            title,
+            flags=re.IGNORECASE,
+        ).strip(" ,-")
 
+    guess_type, guess_desc, _ = guess_type_by_description(title, rules_map)
     if matched_type:
-        # User đã nói rõ Type -> đủ 3 trường, tạo ngay, không cần xác nhận
-        await _finalize_create_task(update, title, matched_type, task_date)
-        return
+        guess_type = matched_type
+        guess_desc = "bạn đã chỉ rõ loại task"
 
-    # Chưa rõ Type -> đoán theo Description
-    guess_type, guess_desc, score = guess_type_by_description(title, rules_map)
-    options_text = format_type_options(rules_map)
+    pending = {
+        "stage": "confirm_deadline",
+        "title": title,
+        "date": task_date,
+        "guess_type": guess_type,
+        "created_at": datetime.now(VN).isoformat(),
+    }
+    update_state(pending_task=pending)
 
-    if guess_type:
-        update_state(pending_task={"title": title, "date": task_date, "guess_type": guess_type})
-        msg = (f"Mình đoán task '{title}' thuộc loại **{guess_type}** "
-               f"(dựa theo mô tả: \"{guess_desc}\").\n"
-               f"Đúng không? Gõ \"đúng\" để xác nhận, hoặc gõ đúng số loại nếu mình đoán sai:\n{options_text}")
-    else:
-        update_state(pending_task={"title": title, "date": task_date, "guess_type": None})
-        msg = f"Task '{title}' thuộc loại nào? Mình chưa đoán được, chọn số nhé:\n{options_text}"
-
+    due_text = datetime.strptime(task_date, "%Y-%m-%d").strftime("%d/%m/%Y")
+    msg = (
+        f"Mình hiểu task là **{title}**, deadline **{due_text}**.\n"
+        "Xác nhận deadline này đúng không? Nhắn `đúng`, hoặc nói lại ngày muốn sửa."
+    )
     await update.message.reply_text(msg)
     save_message("bot", msg)
 
 
 async def handle_task_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Xử lý tin nhắn KẾ TIẾP khi đang có pending_task chờ xác nhận Type. Trả về True nếu đã xử lý."""
+    """Handle the next message for deadline/type confirmation."""
     text = update.message.text
-    norm = strip_diacritics(text.lower())
+    norm = strip_diacritics(text.lower()).strip()
     state = load_state()
     pending = state.get("pending_task")
     if not pending:
@@ -847,9 +873,53 @@ async def handle_task_confirmation(update: Update, context: ContextTypes.DEFAULT
         save_message("bot", msg)
         return True
 
+    stage = pending.get("stage", "type")
+    if stage == "confirm_deadline":
+        has_new_date = any(word in norm for word in ("hom nay", "ngay mai", "mai", "ngay mot"))
+        if has_new_date:
+            pending["date"] = parse_task_date(text)
+
+        confirmed = (
+            norm in {"dung", "ok", "oke", "duoc", "xac nhan", "yes", "u", "uh"}
+            or "xac nhan" in norm
+            or norm.startswith("dung ")
+        )
+        if not confirmed and not has_new_date:
+            msg = "Mình chưa xác nhận được deadline. Nhắn `đúng`, `hôm nay`, `ngày mai`, hoặc `hủy`."
+            await update.message.reply_text(msg)
+            save_message("bot", msg)
+            return True
+        if has_new_date and not confirmed:
+            due_text = datetime.strptime(pending["date"], "%Y-%m-%d").strftime("%d/%m/%Y")
+            update_state(pending_task=pending)
+            msg = f"Đã đổi deadline thành **{due_text}**. Xác nhận đúng ngày này không?"
+            await update.message.reply_text(msg)
+            save_message("bot", msg)
+            return True
+
+        rules_map = await asyncio.to_thread(get_rules_point_map)
+        if pending.get("guess_type"):
+            pending["stage"] = "confirm_type"
+            update_state(pending_task=pending)
+            options_text = format_type_options(rules_map)
+            msg = (
+                f"Deadline đã xác nhận. Mình đoán task thuộc loại **{pending['guess_type']}**. "
+                f"Đúng không? Nhắn `đúng` hoặc chọn số loại:\n{options_text}"
+            )
+            await update.message.reply_text(msg)
+            save_message("bot", msg)
+            return True
+
+        pending["stage"] = "type"
+        update_state(pending_task=pending)
+        options_text = format_type_options(rules_map)
+        msg = f"Deadline đã xác nhận. Task thuộc loại nào? Chọn đúng 1 số nhé:\n{options_text}"
+        await update.message.reply_text(msg)
+        save_message("bot", msg)
+        return True
+
     rules_map = await asyncio.to_thread(get_rules_point_map)
     final_type = None
-
     m = re.search(r'\b([1-6])\b', norm)
     if m:
         num = int(m.group(1))
@@ -860,7 +930,7 @@ async def handle_task_confirmation(update: Update, context: ContextTypes.DEFAULT
 
     if not final_type and pending.get("guess_type"):
         if (re.search(r'\b(dung|chuan|yes)\b', norm) or "xac nhan" in norm
-                or norm.strip() in ("ok", "u", "ok.", "u.", "duoc", "duoc roi")):
+                or norm in ("ok", "oke", "u", "duoc", "duoc roi")):
             final_type = pending["guess_type"]
 
     if not final_type:
@@ -962,7 +1032,10 @@ async def handle_chat(update: Update, context: ContextTypes.DEFAULT_TYPE,
     forced_probe = track_push and not cooldown_active and not state.get("working") and push_count >= Config.PUSH_LIMIT
 
     prompt = await build_prompt(interaction_type, user_text, extra_instruction=instruction)
-    resp = await generate_ai_response(prompt) or "Mình đang nghe đây, bạn cứ nói tiếp đi."
+    resp = await generate_ai_response(prompt) or (
+        "Mình đang gặp lỗi kết nối với bộ não Gemini nên chưa trả lời trọn vẹn được. "
+        "Tin nhắn của bạn chưa làm thay đổi task hay reminder nào."
+    )
     await update.message.reply_text(resp)
     save_message("bot", resp)
 
@@ -984,18 +1057,31 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
+    user_text = update.message.text
     state = load_state()
-    if state.get("pending_task"):
+    # Một phản hồi sửa lỗi/hủy yêu cầu không được dùng làm câu trả lời cho
+    # pending category/deadline của task trước đó.
+    if state.get("pending_task") and is_feedback_message(user_text):
+        update_state(pending_task=None)
+    elif state.get("pending_task"):
         handled = await handle_task_confirmation(update, context)
         if handled:
             return
-
-    user_text = update.message.text
     intent = await detect_intent(user_text)
     hour = datetime.now(VN).hour
 
     try:
-        if intent == "approve":
+        if intent == "feedback":
+            await handle_chat(
+                update,
+                context,
+                "chat",
+                extra=("Đây là feedback/bug report của người dùng. Xác nhận điều gì sai, "
+                       "tóm tắt đề xuất sửa, không tạo task/reminder và không đổ lỗi cho người dùng."),
+                track_push=False,
+            )
+
+        elif intent == "approve":
             await handle_approve(update, context)
 
         elif intent == "done":
@@ -1013,10 +1099,10 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif intent == "energy":
             await handle_chat(update, context, "chat",
-                               extra="Người dùng đang cảm thấy mệt mỏi/nản. Xử lý theo khung Push-Probe-Pivot: "
-                                     "KHÔNG mở đầu bằng câu an ủi, đi thẳng vào hỏi nguyên nhân hoặc đề xuất "
-                                     "hướng xử lý phù hợp.",
-                               track_push=True)
+                               extra="Người dùng đang cảm thấy mệt mỏi/nản. Trả lời đồng cảm, ngắn gọn, "
+                                     "hỏi họ muốn nghỉ, nói chuyện hay chọn một bước rất nhỏ. Không mắng, "
+                                     "không tự tạo task và không ép Deep Work.",
+                               track_push=False)
 
         elif intent == "working":
             update_state(
@@ -1048,13 +1134,16 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                    track_push=True)
 
         else:
-            await handle_chat(update, context, "chat", track_push=True)
+            await handle_chat(update, context, "chat", track_push=False)
 
     except Exception as e:
-        logger.exception(e)
-        prompt = await build_prompt("chat", user_text, extra_instruction="Hệ thống gặp lỗi kỹ thuật nhẹ.")
-        resp = await generate_ai_response(prompt) or "Hình như mình gặp chút trục trặc, bạn nói lại được không?"
-        await update.message.reply_text(resp)
+        logger.exception("Message handling error: %s", e)
+        # Không gọi Gemini lần hai tại đây: nếu lỗi nằm ở AI/quota, router không
+        # được tạo thêm một vòng lỗi. Trả lời thẳng để người dùng biết trạng thái.
+        await update.message.reply_text(
+            "Mình gặp lỗi khi xử lý tin này nên chưa thực hiện hành động nào. "
+            "Bạn gửi lại câu ngắn hơn giúp mình nhé."
+        )
 
 
 # ==========================================================
